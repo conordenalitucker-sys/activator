@@ -1,0 +1,108 @@
+"""Supabase REST data layer for Project Activator.
+
+Reads credentials from the environment; for local runs it loads them from the
+project .env. On Streamlit Cloud, app.py populates os.environ from st.secrets
+before importing this module.
+
+Python 3.9 compatible.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import requests
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_local_env() -> None:
+    if os.environ.get("SUPABASE_URL"):
+        return
+    envf = ROOT / ".env"
+    if not envf.exists():
+        return
+    for line in envf.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            os.environ.setdefault(k.strip(), v.strip())
+
+
+_load_local_env()
+
+
+def _base() -> str:
+    return os.environ["SUPABASE_URL"].rstrip("/").removesuffix("/rest/v1")
+
+
+def _headers(extra=None) -> dict:
+    key = os.environ["SUPABASE_SECRET_KEY"]
+    h = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    if extra:
+        h.update(extra)
+    return h
+
+
+def get(path: str):
+    r = requests.get(f"{_base()}/rest/v1/{path}", headers=_headers(), timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def patch(path: str, body: dict):
+    r = requests.patch(f"{_base()}/rest/v1/{path}", headers=_headers({"Prefer": "return=representation"}),
+                       json=body, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def post(path: str, body, prefer: str = "return=representation"):
+    r = requests.post(f"{_base()}/rest/v1/{path}", headers=_headers({"Prefer": prefer}),
+                      json=body, timeout=30)
+    r.raise_for_status()
+    return r.json() if r.text else None
+
+
+# --- convenience -----------------------------------------------------------
+
+def get_config() -> dict:
+    rows = get("config?select=*&id=eq.1")
+    return rows[0] if rows else {}
+
+
+def get_contacts() -> list:
+    return get("contacts?select=*&order=manual_priority.desc,name.asc")
+
+
+def get_companies_map() -> dict:
+    return {c["id"]: c["name"] for c in get("companies?select=id,name")}
+
+
+def get_company_choices() -> list:
+    return get("companies?select=id,name&order=name.asc")
+
+
+def todays_interaction_count(today_iso: str) -> int:
+    return len(get(f"interactions?date=eq.{today_iso}&select=id"))
+
+
+def update_contact(contact_id: str, fields: dict):
+    return patch(f"contacts?id=eq.{contact_id}", fields)
+
+
+def insert_contact(fields: dict):
+    return post("contacts", fields)
+
+
+def ensure_company(name: str) -> str:
+    name = name.strip()
+    existing = get(f"companies?select=id&name=eq.{requests.utils.quote(name)}")
+    if existing:
+        return existing[0]["id"]
+    created = post("companies", {"name": name})
+    return created[0]["id"]
+
+
+def log_interaction(fields: dict):
+    return post("interactions", fields, prefer="return=minimal")
