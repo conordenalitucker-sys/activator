@@ -14,7 +14,7 @@ create table if not exists config (
   daily_goal_count     int  default 4,
   daily_goal_minutes   int,
   roster_scrape_cadence text default 'weekly',
-  scoring_weights      jsonb default '{"firm_fit":0.3,"triggers":0.3,"corporate":0.2,"relationship":0.2}'::jsonb,
+  scoring_weights      jsonb default '{"firm_fit":0.10,"triggers":0.40,"relationship":0.35,"business":0.15}'::jsonb,
   updated_at           timestamptz default now(),
   constraint config_singleton check (id = 1)
 );
