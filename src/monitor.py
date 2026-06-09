@@ -164,7 +164,8 @@ def classify(client, company, entities, candidates):
         f"CANDIDATES:\n" + "\n".join(lines) + "\n\n"
         f"Return ONLY a JSON array. For each KEPT item: "
         f'{{"index": int, "type": one of '
-        f'["litigation","regulatory","corporate","leadership","news","industry-trend"], '
+        f'["litigation","regulatory","corporate","leadership","news","industry-trend","commentary"], '
+        f'(use "commentary" for analysis/opinion/client-alert/thought-leadership pieces) '
         f'"summary": "one sentence", "score_impact": 0.0-1.0 (BD relevance), '
         f'"entity": "which entity/company it concerns"}}. '
         f"If none are relevant, return []. No prose, JSON only."
@@ -211,6 +212,12 @@ def main():
             for hit in google_news(qtext, juris or ""):
                 hit.update({"entity_id": ent_id, "relationship": rel, "proximity": prox})
                 candidates.append(hit)
+            # For topics (interests/industries), also pull legal/industry COMMENTARY & analysis.
+            if rel in ("interest", "industry"):
+                for hit in google_news(qtext, 'commentary OR analysis OR "client alert" OR "legal update"'):
+                    hit["kind"] = "commentary"
+                    hit.update({"entity_id": ent_id, "relationship": rel, "proximity": prox})
+                    candidates.append(hit)
             # Only run court searches on named entities (not topic/industry/interest terms).
             if rel in named:
                 for hit in courtlistener(qtext, token, juris):

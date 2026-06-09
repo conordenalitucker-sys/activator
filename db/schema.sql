@@ -143,7 +143,7 @@ create table if not exists signals (
   id              uuid primary key default gen_random_uuid(),
   entity_id       uuid references entities(id) on delete set null,
   company_id      uuid references companies(id) on delete cascade,
-  type            text check (type in ('litigation','regulatory','corporate','leadership','news','industry-trend')),
+  type            text check (type in ('litigation','regulatory','corporate','leadership','news','industry-trend','commentary')),
   relationship    text,
   proximity_weight numeric default 1.0,
   event_date      date,
