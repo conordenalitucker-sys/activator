@@ -48,7 +48,14 @@ CHANNEL_LABEL = {"text": "text / DM"}
 def channel_label(x):
     return CHANNEL_LABEL.get(x, x)
 
-TODAY = dt.date.today()
+# Use a fixed app timezone so "today" is consistent everywhere — the cloud server
+# runs in UTC, which would otherwise roll over to tomorrow in the evening Pacific.
+try:
+    from zoneinfo import ZoneInfo
+    APP_TZ = ZoneInfo("America/Los_Angeles")
+    TODAY = dt.datetime.now(APP_TZ).date()
+except Exception:
+    TODAY = dt.date.today()
 TODAY_ISO = TODAY.isoformat()
 
 
