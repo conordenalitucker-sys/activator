@@ -110,3 +110,20 @@ def ensure_company(name: str) -> str:
 
 def log_interaction(fields: dict):
     return post("interactions", fields, prefer="return=minimal")
+
+
+def todays_minutes(today_iso: str) -> int:
+    rows = get(f"interactions?date=eq.{today_iso}&select=duration_minutes")
+    return sum((r.get("duration_minutes") or 0) for r in rows)
+
+
+def all_interactions_brief() -> list:
+    return get("interactions?select=date,duration_minutes,type,contact_id&order=date.desc")
+
+
+def get_business() -> list:
+    return get("business_origination?select=*&order=date.desc")
+
+
+def insert_business(fields: dict):
+    return post("business_origination", fields)

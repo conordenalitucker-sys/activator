@@ -112,8 +112,8 @@ create table if not exists interactions (
   id              uuid primary key default gen_random_uuid(),
   contact_id      uuid references contacts(id) on delete cascade,
   date            date not null default current_date,
-  type            text check (type in ('personal','pitch','legal-update','industry-check','hello','other')),
-  channel         text check (channel in ('email','LinkedIn','call','in-person','event','other')),
+  type            text check (type in ('personal','pitch','legal-update','industry-check','hello','client-work','other')),
+  channel         text check (channel in ('email','LinkedIn','call','in-person','event','text','other')),
   notes           text,
   duration_minutes int,
   was_suggested   boolean default false,
@@ -222,3 +222,17 @@ create table if not exists score_snapshots (
   created_at        timestamptz default now()
 );
 create index if not exists score_snapshots_contact_idx on score_snapshots (contact_id, date desc);
+
+-- ---------------------------------------------------------------------------
+-- business_origination: business that came IN through a connection
+-- ---------------------------------------------------------------------------
+create table if not exists business_origination (
+  id          uuid primary key default gen_random_uuid(),
+  contact_id  uuid references contacts(id) on delete set null,
+  date        date not null default current_date,
+  description text,
+  est_value   numeric,
+  created_at  timestamptz default now()
+);
+create index if not exists business_origination_contact_idx
+  on business_origination (contact_id, date desc);

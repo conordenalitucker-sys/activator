@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime as dt
 import os
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
@@ -39,8 +40,13 @@ COLOR_DOT = {"Green": "🟢", "Blue": "🔵", "Purple": "🟣"}
 TYPE_OPTS = ["client", "past-client", "prospect", "professional", "referral", "friend"]
 COMM_OPTS = ["email", "call", "LinkedIn", "in-person", "unknown"]
 SENIORITY_OPTS = ["decision-maker", "influencer", "staff", "unknown"]
-TOUCH_TYPES = ["personal", "pitch", "legal-update", "industry-check", "hello", "other"]
-CHANNELS = ["email", "LinkedIn", "call", "in-person", "event", "other"]
+TOUCH_TYPES = ["personal", "pitch", "legal-update", "industry-check", "hello", "client-work", "other"]
+CHANNELS = ["email", "LinkedIn", "call", "in-person", "event", "text", "other"]
+CHANNEL_LABEL = {"text": "text / DM"}
+
+
+def channel_label(x):
+    return CHANNEL_LABEL.get(x, x)
 
 TODAY = dt.date.today()
 TODAY_ISO = TODAY.isoformat()
@@ -65,6 +71,21 @@ def load_config():
 @st.cache_data(ttl=30)
 def todays_count():
     return db.todays_interaction_count(TODAY_ISO)
+
+
+@st.cache_data(ttl=30)
+def todays_minutes():
+    return db.todays_minutes(TODAY_ISO)
+
+
+@st.cache_data(ttl=60)
+def load_interactions():
+    return db.all_interactions_brief()
+
+
+@st.cache_data(ttl=60)
+def load_business():
+    return db.get_business()
 
 
 def refresh():
@@ -119,7 +140,8 @@ def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None):
 
 # ---------------------------------------------------------------------------
 st.sidebar.title("📇 Project Activator")
-page = st.sidebar.radio("Go to", ["Today", "Contacts", "Add contact", "Settings"])
+page = st.sidebar.radio("Go to", ["Today", "Contacts", "Add contact",
+                                  "Business In", "Activity", "Settings"])
 st.sidebar.caption("Public info + relationship notes only — no confidential matter details.")
 
 contacts = load_contacts()
@@ -159,7 +181,7 @@ def render_contact_card(c):
         with st.form(f"log_{c['id']}"):
             cols = st.columns(4)
             ttype = cols[0].selectbox("Touch type", TOUCH_TYPES, key=f"tt_{c['id']}")
-            channel = cols[1].selectbox("Channel", CHANNELS, key=f"ch_{c['id']}")
+            channel = cols[1].selectbox("Channel", CHANNELS, format_func=channel_label, key=f"ch_{c['id']}")
             minutes = cols[2].number_input("Minutes", 0, 600, 10, step=5, key=f"mn_{c['id']}")
             cols[3].caption("Logging resets the cadence clock.")
             notes = st.text_input("Notes (optional)", key=f"nt_{c['id']}")
@@ -172,12 +194,16 @@ def render_contact_card(c):
 if page == "Today":
     st.header("Today")
     done = todays_count()
-    pct = min(done / goal, 1.0) if goal else 0.0
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        st.progress(pct, text=f"Daily goal: {done} of {goal} touches logged")
-    with c2:
-        st.metric("Logged today", done)
+    mins = todays_minutes()
+    goal_min = cfg.get("daily_goal_minutes") or 0
+    st.progress(min(done / goal, 1.0) if goal else 0.0,
+                text=f"Touch goal: {done} of {goal} contacts")
+    if goal_min:
+        st.progress(min(mins / goal_min, 1.0) if goal_min else 0.0,
+                    text=f"Time goal: {mins} of {goal_min} min")
+    m1, m2 = st.columns(2)
+    m1.metric("Logged today", done)
+    m2.metric("Minutes today", mins)
 
     queue = sorted([c for c in contacts if is_overdue(c)],
                    key=lambda c: (-(c.get("manual_priority") or 0), -overdue_by(c)))
@@ -212,7 +238,7 @@ if page == "Today":
         cols = st.columns(4)
         who = cols[0].selectbox("Contact", [NEW_CONTACT] + list(names.keys()))
         ttype = cols[1].selectbox("Touch type", TOUCH_TYPES)
-        channel = cols[2].selectbox("Channel", CHANNELS)
+        channel = cols[2].selectbox("Channel", CHANNELS, format_func=channel_label)
         minutes = cols[3].number_input("Minutes", 0, 600, 15, step=5)
         st.caption(f"Pick **{NEW_CONTACT}** to add someone new — fill these in:")
         nc1, nc2 = st.columns(2)
@@ -361,15 +387,117 @@ elif page == "Add contact":
                 st.success(f"Added {name}.")
 
 
+# ============================== BUSINESS IN ================================
+elif page == "Business In":
+    st.header("Business In")
+    st.caption("Track business that came IN through a connection (referral / origination). "
+               "Keep descriptions general — no confidential matter details.")
+    try:
+        biz = load_business()
+    except Exception:
+        st.warning("Run migration 002 in the Supabase SQL Editor to enable this page "
+                   "(it adds the business-origination table).")
+        st.stop()
+    name_by_id = {c["id"]: c["name"] for c in contacts}
+
+    with st.form("add_business"):
+        names = {f"{c['name']} — {org_name(c)}": c["id"] for c in contacts}
+        cols = st.columns([2, 1, 1])
+        who = cols[0].selectbox("Source connection", list(names.keys()))
+        when = cols[1].date_input("Date", TODAY)
+        value = cols[2].number_input("Est. value ($, optional)", 0, step=1000)
+        desc = st.text_input("Description (general)")
+        if st.form_submit_button("➕ Record business in"):
+            db.insert_business({
+                "contact_id": names[who],
+                "date": when.isoformat(),
+                "description": desc or None,
+                "est_value": value or None,
+            })
+            refresh()
+            st.success("Recorded.")
+            st.rerun()
+
+    if biz:
+        total = sum((b.get("est_value") or 0) for b in biz)
+        c1, c2 = st.columns(2)
+        c1.metric("Originations recorded", len(biz))
+        c2.metric("Est. value tracked", f"${total:,.0f}")
+        st.dataframe(pd.DataFrame([{
+            "Date": (b.get("date") or "")[:10],
+            "Source": name_by_id.get(b.get("contact_id"), "—"),
+            "Description": b.get("description") or "",
+            "Est. value": f"${(b.get('est_value') or 0):,.0f}" if b.get("est_value") else "",
+        } for b in biz]), width="stretch", hide_index=True)
+
+        agg = defaultdict(lambda: [0, 0.0])
+        for b in biz:
+            a = agg[b.get("contact_id")]
+            a[0] += 1
+            a[1] += (b.get("est_value") or 0)
+        st.subheader("By source connection")
+        st.dataframe(pd.DataFrame([{
+            "Source": name_by_id.get(k, "—"), "Count": v[0], "Est. value": f"${v[1]:,.0f}",
+        } for k, v in sorted(agg.items(), key=lambda kv: -kv[1][1])]),
+            width="stretch", hide_index=True)
+    else:
+        st.info("No business-in recorded yet.")
+
+
+# ============================== ACTIVITY ==================================
+elif page == "Activity":
+    st.header("Activity over time")
+    ints = load_interactions()
+
+    def window(days):
+        cutoff = (TODAY - dt.timedelta(days=days)).isoformat()
+        rows = [r for r in ints if (r.get("date") or "") >= cutoff]
+        return len(rows), sum((r.get("duration_minutes") or 0) for r in rows)
+
+    w7 = window(7)
+    w30 = window(30)
+    all_min = sum((r.get("duration_minutes") or 0) for r in ints)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Last 7 days", f"{w7[0]} touches", f"{w7[1]} min", delta_color="off")
+    c2.metric("Last 30 days", f"{w30[0]} touches", f"{w30[1]} min", delta_color="off")
+    c3.metric("All time", f"{len(ints)} touches", f"{all_min} min", delta_color="off")
+
+    per_day = defaultdict(lambda: [0, 0])
+    for r in ints:
+        d = (r.get("date") or "")[:10]
+        per_day[d][0] += 1
+        per_day[d][1] += (r.get("duration_minutes") or 0)
+    days = [(TODAY - dt.timedelta(days=i)).isoformat() for i in range(13, -1, -1)]
+    st.subheader("Daily (last 14 days)")
+    st.bar_chart(pd.DataFrame({
+        "date": days,
+        "touches": [per_day[d][0] for d in days],
+        "minutes": [per_day[d][1] for d in days],
+    }).set_index("date"))
+
+    by_type = defaultdict(int)
+    for r in ints:
+        by_type[r.get("type") or "—"] += 1
+    st.subheader("By touch type (all time)")
+    st.dataframe(pd.DataFrame([{"Touch type": k, "Count": v}
+                               for k, v in sorted(by_type.items(), key=lambda kv: -kv[1])]),
+                 width="stretch", hide_index=True)
+
+
 # ============================== SETTINGS ===================================
 elif page == "Settings":
     st.header("Settings")
-    st.caption(f"Your daily touch goal is currently **{goal}**.")
+    st.caption(f"Daily touch goal: **{goal}** · time goal: "
+               f"**{cfg.get('daily_goal_minutes') or 'none'}**")
     with st.form("settings"):
-        new_goal = st.number_input("Daily touch goal", min_value=1, max_value=20,
+        new_goal = st.number_input("Daily touch goal (contacts)", min_value=1, max_value=20,
                                    value=int(goal), step=1,
                                    help="How many contacts you aim to reach out to each day.")
+        new_min = st.number_input("Daily time goal (minutes, 0 = none)", min_value=0, max_value=600,
+                                  value=int(cfg.get("daily_goal_minutes") or 0), step=5,
+                                  help="Optional: minutes of BD per day to aim for.")
         if st.form_submit_button("💾 Save"):
-            db.update_config({"daily_goal_count": int(new_goal)})
+            db.update_config({"daily_goal_count": int(new_goal),
+                              "daily_goal_minutes": int(new_min) or None})
             refresh()
-            st.success(f"Daily touch goal set to {int(new_goal)}.")
+            st.success("Settings saved.")
