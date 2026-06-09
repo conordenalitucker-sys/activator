@@ -48,7 +48,7 @@ def google_news(phrase, extra=""):
     try:
         root = ET.fromstring(fetch(url))
     except Exception as e:
-        sys.stderr.write(f"  news fetch failed [{query}]: {str(e)[:80]}\n")
+        sys.stderr.write(f"  news fetch failed [{phrase}]: {str(e)[:80]}\n")
         return out
     for item in list(root.iterfind(".//item"))[:NEWS_PER_QUERY]:
         title = (item.findtext("title") or "").strip()
@@ -105,7 +105,7 @@ def courtlistener(phrase, token, jurisdiction=None):
             "title": r.get("caseName") or r.get("docketNumber") or "case",
             "url": "https://www.courtlistener.com" + (r.get("absolute_url") or ""),
             "date": (r.get("dateFiled") or None),
-            "source": r.get("court") or "CourtListener", "query": query,
+            "source": r.get("court") or "CourtListener", "query": phrase,
         })
     return out
 
