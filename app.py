@@ -132,6 +132,29 @@ def org_name(c):
     return companies.get(c.get("company_id"), "") if c.get("company_id") else ""
 
 
+def render_contact_card(c):
+    ds = days_since(c)
+    last = f"{ds}d ago" if ds is not None else "never"
+    dot = COLOR_DOT.get(c.get("priority_color"), "")
+    with st.expander(f"{dot} **{c['name']}** — {org_name(c)}  ·  "
+                     f"{c.get('cadence_tier','?')} · last: {last}"):
+        st.caption(f"Type: {c.get('contact_type') or '—'} · "
+                   f"Priority: {c.get('manual_priority') or '—'}/5 · "
+                   f"Pref: {c.get('comm_preference') or '—'}")
+        if c.get("personal_notes"):
+            st.write(c["personal_notes"])
+        with st.form(f"log_{c['id']}"):
+            cols = st.columns(4)
+            ttype = cols[0].selectbox("Touch type", TOUCH_TYPES, key=f"tt_{c['id']}")
+            channel = cols[1].selectbox("Channel", CHANNELS, key=f"ch_{c['id']}")
+            minutes = cols[2].number_input("Minutes", 0, 600, 10, step=5, key=f"mn_{c['id']}")
+            cols[3].caption("Logging resets the cadence clock.")
+            notes = st.text_input("Notes (optional)", key=f"nt_{c['id']}")
+            if st.form_submit_button("✅ Log it"):
+                do_log(c["id"], ttype, channel, minutes, notes, suggested_type="cadence-due")
+                st.rerun()
+
+
 # ============================== TODAY ======================================
 if page == "Today":
     st.header("Today")
@@ -146,30 +169,26 @@ if page == "Today":
     queue = sorted([c for c in contacts if is_overdue(c)],
                    key=lambda c: (-(c.get("manual_priority") or 0), -overdue_by(c)))
 
-    st.subheader(f"Reach out today ({len(queue)} due by cadence)")
+    # Cap the daily ask to the goal, shrinking as touches get logged today.
+    remaining = max(goal - done, 0)
+    todays = queue[:remaining]
+
     if not queue:
-        st.success("Nobody is overdue. Nice — you're current with your book.")
-    for c in queue[:25]:
-        ds = days_since(c)
-        last = f"{ds}d ago" if ds is not None else "never"
-        dot = COLOR_DOT.get(c.get("priority_color"), "")
-        with st.expander(f"{dot} **{c['name']}** — {org_name(c)}  ·  "
-                         f"{c.get('cadence_tier','?')} · last: {last}"):
-            st.caption(f"Type: {c.get('contact_type') or '—'} · "
-                       f"Priority: {c.get('manual_priority') or '—'}/5 · "
-                       f"Pref: {c.get('comm_preference') or '—'}")
-            if c.get("personal_notes"):
-                st.write(c["personal_notes"])
-            with st.form(f"log_{c['id']}"):
-                cols = st.columns(4)
-                ttype = cols[0].selectbox("Touch type", TOUCH_TYPES, key=f"tt_{c['id']}")
-                channel = cols[1].selectbox("Channel", CHANNELS, key=f"ch_{c['id']}")
-                minutes = cols[2].number_input("Minutes", 0, 600, 10, step=5, key=f"mn_{c['id']}")
-                cols[3].caption("Logging resets this contact's cadence clock.")
-                notes = st.text_input("Notes (optional)", key=f"nt_{c['id']}")
-                if st.form_submit_button("✅ Log it"):
-                    do_log(c["id"], ttype, channel, minutes, notes, suggested_type="hello")
-                    st.rerun()
+        st.success("Nobody is overdue — you're current with your whole book.")
+    elif remaining == 0:
+        st.success(f"🎉 You hit today's goal of {goal}. Anything more today is a bonus.")
+    else:
+        st.subheader(f"Reach out today — your top {len(todays)}")
+        st.caption(f"{len(queue)} contacts are due overall; showing only your highest-priority "
+                   f"{len(todays)} so it stays manageable. Each one you log frees a slot for the next.")
+        for c in todays:
+            render_contact_card(c)
+
+    extra = queue[len(todays):]
+    if extra:
+        with st.expander(f"Show {len(extra)} more due (optional — only if you want to keep going)"):
+            for c in extra[:25]:
+                render_contact_card(c)
 
     st.divider()
     st.subheader("Log other BD")
