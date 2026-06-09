@@ -35,13 +35,17 @@ HEADERS = [
 
 def load_env() -> dict:
     env = {}
-    for line in (ROOT / ".env").read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, v = line.split("=", 1)
-            env[k.strip()] = v.strip()
-    base = env["SUPABASE_URL"].rstrip("/").removesuffix("/rest/v1")
-    return {"base": base, "key": env["SUPABASE_SECRET_KEY"]}
+    envf = ROOT / ".env"
+    if envf.exists():
+        for line in envf.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                env[k.strip()] = v.strip()
+    url = env.get("SUPABASE_URL") or os.environ["SUPABASE_URL"]
+    key = env.get("SUPABASE_SECRET_KEY") or os.environ["SUPABASE_SECRET_KEY"]
+    base = url.rstrip("/").removesuffix("/rest/v1")
+    return {"base": base, "key": key}
 
 
 def supa_get(cfg, path):

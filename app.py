@@ -308,10 +308,18 @@ elif page == "Contacts":
     if pick:
         sel = st.selectbox("Choose", list(pick.keys()))
         c = pick[sel]
+        edit_cos = db.get_company_choices()
+        edit_co_names = [x["name"] for x in edit_cos]
         with st.form("edit_contact"):
             a, b = st.columns(2)
             name = a.text_input("Name", c.get("name") or "")
             title = b.text_input("Title", c.get("title") or "")
+            cur_org = org_name(c)
+            org_opts = ["— none —"] + edit_co_names
+            existing_co = a.selectbox("Organization", org_opts,
+                                      index=org_opts.index(cur_org) if cur_org in org_opts else 0,
+                                      help="Move the contact to a different organization here.")
+            new_co = b.text_input("…or move to a NEW organization")
             email = a.text_input("Email", c.get("email") or "")
             phone = b.text_input("Phone", c.get("phone") or "")
             location = a.text_input("City / location", c.get("location") or "")
@@ -338,8 +346,15 @@ elif page == "Contacts":
             if st.form_submit_button("💾 Save"):
                 merged_int = sorted(set(interests_sel) |
                                     {x.strip() for x in new_interests.split(",") if x.strip()})
+                if new_co.strip():
+                    company_id = db.ensure_company(new_co)
+                elif existing_co != "— none —":
+                    company_id = next(x["id"] for x in edit_cos if x["name"] == existing_co)
+                else:
+                    company_id = None
                 db.update_contact(c["id"], {
-                    "name": name, "title": title or None, "email": email or None,
+                    "name": name, "title": title or None, "company_id": company_id,
+                    "email": email or None,
                     "phone": phone or None, "location": location or None,
                     "linkedin_url": linkedin or None, "contact_type": ctype,
                     "comm_preference": comm, "cadence_tier": cadence,
