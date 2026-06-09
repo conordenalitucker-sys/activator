@@ -28,6 +28,7 @@ for _k in ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_PUBLISHABLE_KEY"):
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 import db  # noqa: E402
+import planning  # noqa: E402  (shared scoring + daily-plan core)
 
 st.set_page_config(page_title="Project Activator", page_icon="📇", layout="wide")
 
@@ -153,6 +154,25 @@ def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None):
     refresh()
 
 
+def rescore():
+    """Recompute opportunity scores instantly from current data + CACHED firm-fit
+    (no Claude) — so same-day edits re-rank without waiting for the nightly run."""
+    cos = {c["id"]: c for c in db.get_companies_full()}
+    sigs = {}
+    for s in load_signals():
+        sigs.setdefault(s.get("company_id"), []).append(s)
+    biz_ids = {b["contact_id"] for b in db.get_business() if b.get("contact_id")}
+    weights = load_config().get("scoring_weights")
+    for c in db.get_contacts():
+        score, rationale, _comps, _top = planning.compute_opportunity(
+            c, cos.get(c.get("company_id")), sigs.get(c.get("company_id"), []),
+            biz_ids, weights, TODAY)
+        db.update_contact(c["id"], {
+            "opportunity_score": score, "opportunity_rationale": rationale,
+            "score_updated_at": dt.datetime.utcnow().isoformat()})
+    refresh()
+
+
 # ---------------------------------------------------------------------------
 st.sidebar.title("📇 Project Activator")
 page = st.sidebar.radio("Go to", ["Today", "Signals", "Contacts", "Companies",
@@ -240,30 +260,36 @@ if page == "Today":
     m1.metric("Logged today", done)
     m2.metric("Minutes today", mins)
 
-    # Candidates = overdue by cadence OR a strong opportunity score (signal-driven).
-    # Ranked by opportunity score first, so a fresh trigger pulls the right person up.
-    candidates = [c for c in contacts if is_overdue(c) or opp(c) >= 50]
-    queue = sorted(candidates,
-                   key=lambda c: (-opp(c), -(c.get("manual_priority") or 0), -overdue_by(c)))
+    # Score freshness + on-demand recompute.
+    scored = [c.get("score_updated_at") for c in contacts if c.get("score_updated_at")]
+    last_scored = max(scored) if scored else None
+    rc1, rc2 = st.columns([3, 1])
+    rc1.caption("Opportunity scores as of "
+                + (str(planning.parse_date(last_scored)) if last_scored else "— not yet scored"))
+    if rc2.button("🔄 Rescore now"):
+        rescore()
+        st.rerun()
 
-    # Cap the daily ask to the goal, shrinking as touches get logged today.
-    remaining = max(goal - done, 0)
-    todays = queue[:remaining]
-
-    if not queue:
-        st.success("Nobody is overdue — you're current with your whole book.")
-    elif remaining == 0:
-        st.success(f"🎉 You hit today's goal of {goal}. Anything more today is a bonus.")
-    else:
-        st.subheader(f"Reach out today — your top {len(todays)}")
-        st.caption(f"{len(queue)} contacts are due overall; showing only your highest-priority "
-                   f"{len(todays)} so it stays manageable. Each one you log frees a slot for the next.")
-        for c in todays:
+    # Shared daily plan — identical to the morning email.
+    opp_picks, cad_picks = planning.select_daily_plan(contacts, sig_by_company, goal, TODAY)
+    st.subheader("🔔 Opportunity-driven")
+    if opp_picks:
+        for c in opp_picks:
             render_contact_card(c)
+    else:
+        st.caption("No fresh developments today.")
+    st.subheader("🔁 Keeping cadence")
+    if cad_picks:
+        for c in cad_picks:
+            render_contact_card(c)
+    else:
+        st.caption("Nobody overdue — you're current.")
 
-    extra = queue[len(todays):]
+    plan_ids = {c["id"] for c in opp_picks + cad_picks}
+    extra = sorted([c for c in contacts if is_overdue(c) and c["id"] not in plan_ids],
+                   key=lambda c: -overdue_by(c))
     if extra:
-        with st.expander(f"Show {len(extra)} more due (optional — only if you want to keep going)"):
+        with st.expander(f"Show {len(extra)} more overdue (optional)"):
             for c in extra[:25]:
                 render_contact_card(c)
 

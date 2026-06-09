@@ -23,6 +23,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import db  # noqa: E402  (loads .env)
+import planning  # noqa: E402  (shared daily-plan selection)
 import anthropic  # noqa: E402
 
 DRY = "--dry" in sys.argv
@@ -156,21 +157,8 @@ def build():
     def has_sig(c):
         return len(sig_by_co.get(c.get("company_id"), [])) > 0
 
-    # Opportunity-driven: contacts with live signals, ranked by opportunity.
-    opp_pool = sorted([c for c in contacts if has_sig(c)],
-                      key=lambda c: (-opp(c), -(c.get("manual_priority") or 0)))
-    max_opp = max(goal - MIN_CADENCE, 0)
-    opp_picks = opp_pool[:max_opp]
-    picked = {c["id"] for c in opp_picks}
-
-    # Keeping cadence: overdue & not already picked. PREFER contacts with NO live signal
-    # (there purely to stay in touch), so news can't crowd out relationship-keeping.
-    overdue_rest = [c for c in contacts if is_overdue(c) and c["id"] not in picked]
-    by_overdue = lambda c: (-overdue_days(c), -(c.get("manual_priority") or 0))
-    pure = sorted([c for c in overdue_rest if not has_sig(c)], key=by_overdue)
-    withsig = sorted([c for c in overdue_rest if has_sig(c)], key=by_overdue)
-    cad_pool = pure + withsig
-    cad_picks = cad_pool[:max(MIN_CADENCE, goal - len(opp_picks))]
+    # Shared selection — identical to the dashboard "Today" list.
+    opp_picks, cad_picks = planning.select_daily_plan(contacts, sig_by_co, goal, TODAY)
 
     # Suggested outreach message per picked contact (one Claude call each, cached here).
     suggestions = {}

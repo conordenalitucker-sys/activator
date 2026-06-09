@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import db  # noqa: E402  (loads .env)
+import planning  # noqa: E402  (shared scoring core)
 import anthropic  # noqa: E402
 
 MODEL = "claude-haiku-4-5-20251001"
@@ -152,59 +153,14 @@ def main():
 
     for c in contacts:
         co = companies.get(c.get("company_id"))
-        # --- relationship: priority + overdue need ---
-        p = (c.get("manual_priority") or 3) / 5.0
-        interval = CADENCE_DAYS.get(c.get("cadence_tier"))
-        last = parse_date(c.get("last_contacted_at"))
-        if interval and last:
-            need = min((TODAY - last).days / interval, 1.5) / 1.5
-        else:
-            need = 1.0  # never contacted / no cadence
-        sen = SENIORITY.get(c.get("seniority"), 0.5)
-        relationship = min(0.5 * p + 0.3 * need + 0.2 * sen, 1.0)
-
-        # --- triggers: recent signals on the company, interest-matched bonus ---
-        interests = [i.lower() for i in (c.get("interests") or [])]
-        trig, top_sig = 0.0, None
-        for s in sig_by_co.get(c.get("company_id"), []):
-            ev = parse_date(s.get("event_date")) or TODAY
-            age = (TODAY - ev).days
-            if age > SIGNAL_WINDOW_DAYS:
-                continue
-            decay = max(0.0, 1.0 - age / SIGNAL_WINDOW_DAYS)
-            contrib = float(s.get("score_impact") or 0) * float(s.get("proximity_weight") or 1) * decay
-            text = f"{s.get('title','')} {s.get('summary','')}".lower()
-            if interests and any(i in text for i in interests):
-                contrib += 0.15
-            trig += contrib
-            if top_sig is None or contrib > top_sig[0]:
-                top_sig = (contrib, s)
-        triggers = min(trig, 1.0)
-
-        # --- firm fit (cached, refreshed on cadence) + business-in ---
-        ff, ff_note = (firm_fit(client, co, company_due_soon.get(co["id"], False), catalog)
-                       if co else (0.5, ""))
-        business = 1.0 if c["id"] in biz_contacts else 0.0
-
-        score01 = (w["firm_fit"] * ff + w["triggers"] * triggers
-                   + w["relationship"] * relationship + w["business"] * business)
-        opp = round(100 * score01)
-
-        # --- rationale ---
-        parts = []
-        if top_sig and top_sig[0] > 0.1:
-            parts.append(f"signal: {top_sig[1].get('title', '')[:60]}")
-        if need > 0.7:
-            days = (TODAY - last).days if last else None
-            parts.append(f"{days}d since contact" if days else "never contacted")
-        if ff > 0.6 and ff_note:
-            parts.append(f"firm fit: {ff_note}")
-        if business:
-            parts.append("has sent business")
-        rationale = (f"Opportunity {opp} vs your priority {c.get('manual_priority') or '—'}. "
-                     + ("Drivers: " + "; ".join(parts) + ". " if parts else "")
-                     + "Verify conflicts before pitching.")
-
+        # Refresh firm-fit (Claude, cached/cadenced), then score via the SHARED core so
+        # the dashboard/email use identical math.
+        if co:
+            ff, ff_note = firm_fit(client, co, company_due_soon.get(co["id"], False), catalog)
+            co["firm_fit"], co["firm_fit_note"] = ff, ff_note
+        sigs = sig_by_co.get(c.get("company_id"), [])
+        opp, rationale, comps, _top = planning.compute_opportunity(
+            c, co, sigs, biz_contacts, w, TODAY)
         if not DRY:
             db.update_contact(c["id"], {
                 "opportunity_score": opp,
@@ -213,11 +169,10 @@ def main():
             })
             db.post("score_snapshots", {
                 "contact_id": c["id"], "opportunity_score": opp,
-                "components": {"firm_fit": round(ff, 2), "triggers": round(triggers, 2),
-                               "relationship": round(relationship, 2), "business": business},
-                "rationale": rationale,
+                "components": comps, "rationale": rationale,
             }, prefer="return=minimal")
-        print(f"{opp:>3}  {c['name']}  (fit={ff:.2f} trig={triggers:.2f} rel={relationship:.2f})")
+        print(f"{opp:>3}  {c['name']}  (fit={comps['firm_fit']:.2f} "
+              f"trig={comps['triggers']:.2f} rel={comps['relationship']:.2f})")
 
     print(f"\nScored {len(contacts)} contacts.")
 
