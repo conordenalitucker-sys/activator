@@ -14,6 +14,7 @@ Python 3.9 compatible.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import urllib.request

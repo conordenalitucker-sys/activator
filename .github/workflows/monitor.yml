@@ -1,3 +1,4 @@
+# Runs the monitoring pipeline + sheet sync nightly (and on manual dispatch).
 name: Nightly monitoring
 
 on:
