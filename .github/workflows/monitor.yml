@@ -1,0 +1,35 @@
+name: Nightly monitoring
+
+on:
+  schedule:
+    - cron: '0 12 * * *'   # 12:00 UTC = 5:00am PT — fresh before morning
+  workflow_dispatch: {}     # allow manual runs from the Actions tab
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Write service-account + sheet config
+        env:
+          GSA: ${{ secrets.GOOGLE_SERVICE_ACCOUNT }}
+          SHEET_URL: ${{ secrets.SHEET_URL }}
+        run: |
+          mkdir -p secrets
+          printf '%s' "$GSA" > secrets/google-service-account.json
+          printf '%s' "$SHEET_URL" > secrets/SHEET.txt
+      - name: Run monitoring + sheet sync
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          COURTLISTENER_TOKEN: ${{ secrets.COURTLISTENER_TOKEN }}
+        run: |
+          python src/monitor.py
+          python src/sheets_sync.py
