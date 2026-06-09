@@ -95,6 +95,14 @@ def load_business():
     return db.get_business()
 
 
+@st.cache_data(ttl=120)
+def load_signals():
+    try:
+        return db.get_signals(limit=400)
+    except Exception:
+        return []
+
+
 def refresh():
     st.cache_data.clear()
 
@@ -156,9 +164,23 @@ companies = load_companies()
 cfg = load_config()
 goal = cfg.get("daily_goal_count", 4)
 
+sig_by_company = {}
+for _s in load_signals():
+    sig_by_company.setdefault(_s.get("company_id"), []).append(_s)
+
 
 def org_name(c):
     return companies.get(c.get("company_id"), "") if c.get("company_id") else ""
+
+
+def opp(c):
+    return c.get("opportunity_score") or 0
+
+
+def signals_for(c, n=2):
+    s = sorted(sig_by_company.get(c.get("company_id"), []),
+               key=lambda x: -(x.get("score_impact") or 0))
+    return s[:n]
 
 
 def interest_catalog():
@@ -180,7 +202,13 @@ def render_contact_card(c):
                      f"{c.get('cadence_tier','?')} · last: {last}"):
         st.caption(f"Type: {c.get('contact_type') or '—'} · "
                    f"Priority: {c.get('manual_priority') or '—'}/5 · "
+                   f"⭐ Opportunity: {c.get('opportunity_score') if c.get('opportunity_score') is not None else '—'}/100 · "
                    f"Pref: {c.get('comm_preference') or '—'}")
+        if c.get("opportunity_rationale"):
+            st.caption(c["opportunity_rationale"])
+        for s in signals_for(c):
+            st.markdown(f"• **{s.get('type')}** — {(s.get('title') or '')[:80]}"
+                        + (f"  [link]({s['url']})" if s.get("url") else ""))
         if c.get("interests"):
             st.caption("Interests: " + ", ".join(c["interests"]))
         if c.get("personal_notes"):
@@ -212,8 +240,11 @@ if page == "Today":
     m1.metric("Logged today", done)
     m2.metric("Minutes today", mins)
 
-    queue = sorted([c for c in contacts if is_overdue(c)],
-                   key=lambda c: (-(c.get("manual_priority") or 0), -overdue_by(c)))
+    # Candidates = overdue by cadence OR a strong opportunity score (signal-driven).
+    # Ranked by opportunity score first, so a fresh trigger pulls the right person up.
+    candidates = [c for c in contacts if is_overdue(c) or opp(c) >= 50]
+    queue = sorted(candidates,
+                   key=lambda c: (-opp(c), -(c.get("manual_priority") or 0), -overdue_by(c)))
 
     # Cap the daily ask to the goal, shrinking as touches get logged today.
     remaining = max(goal - done, 0)
@@ -296,6 +327,7 @@ elif page == "Contacts":
         "Type": c.get("contact_type") or "",
         "Interests": ", ".join(c.get("interests") or []),
         "Priority": c.get("manual_priority") or "",
+        "Opp.": c.get("opportunity_score") if c.get("opportunity_score") is not None else "",
         "Cadence": c.get("cadence_tier") or "",
         "Last contact": (days_since(c) is not None) and f"{days_since(c)}d ago" or "never",
         "Overdue": "⚠️" if is_overdue(c) else "",
@@ -332,8 +364,11 @@ elif page == "Contacts":
                                   index=CADENCE_OPTS.index(c["cadence_tier"]) if c.get("cadence_tier") in CADENCE_OPTS else 1)
             seniority = b.selectbox("Seniority / decision power", SENIORITY_OPTS,
                                     index=SENIORITY_OPTS.index(c["seniority"]) if c.get("seniority") in SENIORITY_OPTS else len(SENIORITY_OPTS) - 1)
+            if c.get("opportunity_score") is not None:
+                st.info(f"⭐ Opportunity score: {c.get('opportunity_score')}/100 — "
+                        f"{c.get('opportunity_rationale', '')}")
             priority = st.slider("Manual priority", 1, 5, int(c.get("manual_priority") or 3),
-                                 help="Your ranking. The opportunity score (coming soon) sits beside this, never overwrites it.")
+                                 help="Your ranking. The opportunity score sits beside it, never overwrites it.")
             cur_int = c.get("interests") or []
             int_opts = sorted(set(INTEREST_CATALOG) | set(cur_int))
             interests_sel = st.multiselect(

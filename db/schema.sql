@@ -39,6 +39,8 @@ create table if not exists companies (
   track_state_regulators boolean default false,
   segment_focus   text,        -- narrow big parents to the contact's unit, e.g. "Amazon Studios"
   jurisdiction_focus text,     -- e.g. "California" — narrows court/news monitoring
+  firm_fit        numeric,     -- 0-1, Claude-cached: how well the company fits Steptoe's practices
+  firm_fit_note   text,
   notes           text,
   created_at      timestamptz default now(),
   updated_at      timestamptz default now()
@@ -64,6 +66,9 @@ create table if not exists contacts (
   how_we_met       text,
   contact_type     text check (contact_type in ('client','past-client','prospect','professional','referral','friend')),
   manual_priority  int  check (manual_priority between 1 and 5),
+  opportunity_score numeric,          -- 0-100, computed by src/score.py
+  opportunity_rationale text,
+  score_updated_at timestamptz,
   priority_color   text check (priority_color in ('Green','Blue','Purple')),
   cadence_tier     text check (cadence_tier in ('weekly','monthly','bimonthly','quarterly','biannual','annual','dormant')),
   tags             text[] default '{}',

@@ -33,4 +33,5 @@ jobs:
           COURTLISTENER_TOKEN: ${{ secrets.COURTLISTENER_TOKEN }}
         run: |
           python src/monitor.py
+          python src/score.py
           python src/sheets_sync.py
