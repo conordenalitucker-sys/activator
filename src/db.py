@@ -71,6 +71,10 @@ def get_config() -> dict:
     return rows[0] if rows else {}
 
 
+def update_config(fields: dict):
+    return patch("config?id=eq.1", fields)
+
+
 def get_contacts() -> list:
     return get("contacts?select=*&order=manual_priority.desc,name.asc")
 

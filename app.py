@@ -119,7 +119,7 @@ def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None):
 
 # ---------------------------------------------------------------------------
 st.sidebar.title("📇 Project Activator")
-page = st.sidebar.radio("Go to", ["Today", "Contacts", "Add contact"])
+page = st.sidebar.radio("Go to", ["Today", "Contacts", "Add contact", "Settings"])
 st.sidebar.caption("Public info + relationship notes only — no confidential matter details.")
 
 contacts = load_contacts()
@@ -317,3 +317,17 @@ elif page == "Add contact":
                 })
                 refresh()
                 st.success(f"Added {name}.")
+
+
+# ============================== SETTINGS ===================================
+elif page == "Settings":
+    st.header("Settings")
+    st.caption(f"Your daily touch goal is currently **{goal}**.")
+    with st.form("settings"):
+        new_goal = st.number_input("Daily touch goal", min_value=1, max_value=20,
+                                   value=int(goal), step=1,
+                                   help="How many contacts you aim to reach out to each day.")
+        if st.form_submit_button("💾 Save"):
+            db.update_config({"daily_goal_count": int(new_goal)})
+            refresh()
+            st.success(f"Daily touch goal set to {int(new_goal)}.")
