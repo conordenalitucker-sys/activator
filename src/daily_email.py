@@ -23,10 +23,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import db  # noqa: E402  (loads .env)
+import anthropic  # noqa: E402
 
 DRY = "--dry" in sys.argv
 TODAY = dt.date.today()
 MIN_CADENCE = 2  # always include at least this many pure-cadence contacts
+MODEL = "claude-haiku-4-5-20251001"
 APP_URL = os.environ.get("ACTIVATOR_APP_URL", "https://m6frwjbqtmj52nscwqg3lt.streamlit.app")
 CADENCE_DAYS = {"weekly": 7, "monthly": 30, "bimonthly": 60,
                 "quarterly": 90, "biannual": 180, "annual": 365, "dormant": None}
@@ -57,9 +59,70 @@ def opp(c):
     return c.get("opportunity_score") or 0
 
 
+def suggest_message(client, c, org_name, top_sig):
+    """Generate a SHORT, ready-to-edit outreach message for ONE picked contact.
+
+    Returns (archetype, text) or None on any failure (so the email never crashes).
+    Public info only — never reference confidential/representation details. Picks an
+    archetype from the contact's comm_preference and whether a driving signal exists:
+      - signal + email/unknown pref  -> EMAIL forwarding a relevant story
+      - text / LinkedIn pref         -> short TEXT / DM note
+      - otherwise (cadence only)     -> warm RECONNECT check-in
+    """
+    pref = (c.get("comm_preference") or "unknown").strip().lower()
+    sig_title = (top_sig.get("title") or "").strip() if top_sig else ""
+    if sig_title and pref in ("email", "unknown", ""):
+        archetype = "email"
+        ask = ("Draft a SHORT email (1-3 sentences) forwarding a relevant news story to this "
+               "contact. Open warmly (e.g. \"thought you'd find this relevant\"), reference the "
+               "signal/story by topic, and note the user will paste the link. Do NOT invent the "
+               "link or quote the article.")
+    elif pref in ("text", "linkedin"):
+        archetype = "text"
+        ask = ("Draft a SHORT, warm, casual text/DM note (1-2 sentences) to reconnect or check in. "
+               "Keep it conversational, not salesy.")
+    else:
+        archetype = "reconnect"
+        ask = ("Draft a SHORT, warm reconnect note (1-3 sentences) checking in. You may gently "
+               "reference how long it's been since they last spoke.")
+    last = parse_date(c.get("last_contacted_at"))
+    last_txt = f"{(TODAY - last).days} days ago" if last else "no record / never"
+    interests = ", ".join(c.get("interests") or []) or "unknown"
+    prompt = (
+        "You are helping a Steptoe LLP attorney write a quick, personal business-development "
+        "outreach. Use ONLY the public facts provided below — never mention any client matter, "
+        "representation, confidential detail, or anything not given. Do not fabricate facts about "
+        "the person. Professional but warm; ready for the attorney to lightly edit.\n\n"
+        f"Contact: {c.get('name')}\n"
+        f"Organization: {org_name or 'unknown'}\n"
+        f"Communication preference: {pref}\n"
+        f"Their interests: {interests}\n"
+        f"Personal notes (public): {c.get('personal_notes') or 'none'}\n"
+        f"Last contacted: {last_txt}\n"
+        f"Relevant signal/story title: {sig_title or 'none'}\n\n"
+        f"{ask}\n"
+        "Return ONLY the message text itself — no greeting label, no subject line, no quotes, "
+        "no commentary."
+    )
+    try:
+        msg = client.messages.create(model=MODEL, max_tokens=200,
+                                     messages=[{"role": "user", "content": prompt}])
+        text = msg.content[0].text.strip().strip('"').strip()
+        if not text:
+            return None
+        return archetype, text
+    except Exception:
+        return None
+
+
 def build():
     cfg = db.get_config()
     goal = cfg.get("daily_goal_count", 4)
+    client = None
+    try:
+        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    except Exception:
+        client = None
     contacts = db.get_contacts()
     companies = db.get_companies_map()
     co_full = {c["id"]: c for c in db.get_companies_full()}
@@ -109,6 +172,15 @@ def build():
     cad_pool = pure + withsig
     cad_picks = cad_pool[:max(MIN_CADENCE, goal - len(opp_picks))]
 
+    # Suggested outreach message per picked contact (one Claude call each, cached here).
+    suggestions = {}
+    if client is not None:
+        for c in list(opp_picks) + list(cad_picks):
+            if c["id"] in suggestions:
+                continue
+            top = sigs(c, 1)
+            suggestions[c["id"]] = suggest_message(client, c, org(c), top[0] if top else None)
+
     # --- HTML helpers ---
     def card(c, show_signals):
         sg = ""
@@ -118,6 +190,15 @@ def build():
                 f'<b>{s.get("type")}</b>: {(s.get("title") or "")[:90]}'
                 + (f' &middot; <a href="{s["url"]}">link</a>' if s.get("url") else "") + '</div>'
                 for s in sigs(c))
+        sug = suggestions.get(c["id"])
+        sug_html = ""
+        if sug:
+            kind, body = sug
+            sug_html = (
+                f'<div style="margin:6px 0 2px;padding:7px 9px;background:#fffbea;'
+                f'border:1px solid #f0e6b8;border-radius:4px;font-size:13px;color:#555;'
+                f'font-style:italic;"><span style="font-style:normal;font-weight:bold;'
+                f'color:#8a6d00;">Suggested ({kind}):</span> &ldquo;{body}&rdquo;</div>')
         last = parse_date(c.get("last_contacted_at"))
         last_txt = f"{(TODAY - last).days}d ago" if last else "never"
         cross = co_full.get(c.get("company_id"), {}).get("cross_sell_practice")
@@ -134,7 +215,7 @@ def build():
             f'<div style="font-size:13px;color:#444;margin:4px 0;">{c.get("opportunity_rationale") or ""}</div>'
             f'<div style="font-size:12px;color:#777;">last contact: {last_txt} &middot; '
             f'cadence: {c.get("cadence_tier") or "—"} &middot; pref: {c.get("comm_preference") or "—"}</div>'
-            f'{cross_html}{sg}</div>')
+            f'{cross_html}{sg}{sug_html}</div>')
 
     button = (
         f'<div style="margin:14px 0;"><a href="{APP_URL}" '
@@ -171,7 +252,12 @@ def build():
           'Public info only. Verify conflicts before any pitch.</div></div>')
 
     def line(c):
-        return f"  - {c['name']} ({org(c)}) opp {c.get('opportunity_score')}: {c.get('opportunity_rationale') or ''}"
+        base = f"  - {c['name']} ({org(c)}) opp {c.get('opportunity_score')}: {c.get('opportunity_rationale') or ''}"
+        sug = suggestions.get(c["id"])
+        if sug:
+            kind, body = sug
+            base += f'\n      Suggested ({kind}): "{body}"'
+        return base
     text = (f"BD plan — {TODAY:%A, %B %-d}\nRecord BD: {APP_URL}\n\n"
             f"OPPORTUNITY-DRIVEN (news & developments):\n"
             + ("\n".join(line(c) for c in opp_picks) or "  (none)")

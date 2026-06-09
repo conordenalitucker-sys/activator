@@ -42,7 +42,11 @@ STEPTOE_PRACTICES = (
     "life sciences & health care, real estate, bankruptcy"
 )
 
-WEIGHTS = {"firm_fit": 0.20, "triggers": 0.40, "relationship": 0.30, "business": 0.10}
+# firm_fit is the pure-AI-judgment component; we intentionally down-weight it (to ~half)
+# and redistribute to the data-grounded components (triggers/relationship/business) so the
+# AI firm-fit estimate can't over-correct the score. Sum stays 1.0.
+# (config.scoring_weights can still override any of these — see main().)
+WEIGHTS = {"firm_fit": 0.10, "triggers": 0.40, "relationship": 0.35, "business": 0.15}
 
 
 def parse_date(s):
