@@ -1,0 +1,26 @@
+# Weekly scrape of steptoe.com practices + attorneys (headless Chromium).
+name: Weekly firm roster scrape
+
+on:
+  schedule:
+    - cron: '0 11 * * 1'   # Mondays 11:00 UTC (~4am PT) — fresh for the week
+  workflow_dispatch: {}
+
+jobs:
+  roster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Scrape firm roster
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
+        run: python src/roster_scrape.py

@@ -3,6 +3,7 @@ requests>=2.31
 pandas>=2.0
 tzdata>=2024.1
 anthropic>=0.40
+playwright>=1.40
 openpyxl>=3.1
 gspread>=6.0
 google-auth>=2.0

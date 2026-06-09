@@ -73,31 +73,47 @@ def needs_refit(company, due_soon):
     return False
 
 
-def firm_fit(client, company, due_soon=False):
+USER_PRACTICES = {"litigation", "appeals", "appellate", "appeals & advocacy",
+                  "litigation & dispute resolution"}
+
+
+def firm_fit(client, company, due_soon=False, catalog=None):
     """0-1 fit + short note. Cached on the company; refreshed on a ~3-month cadence
-    (sooner if a contact at the company is within DUE_SOON_DAYS of being due)."""
+    (sooner if a contact is within DUE_SOON_DAYS of being due). Also picks the best-fit
+    practice from the live scraped catalog and, if it's OUTSIDE litigation/appeals,
+    stores it as cross_sell_practice for colleague suggestions."""
     if not needs_refit(company, due_soon):
         return float(company["firm_fit"]), company.get("firm_fit_note") or ""
+    pick = ""
+    if catalog:
+        pick = (f' Also choose the SINGLE best-fit practice for this company from this exact '
+                f'list (or "Litigation" if litigation/appeals fits best): [{", ".join(catalog[:120])}]. '
+                f'Return it verbatim as "practice".')
     prompt = (
         f"Steptoe LLP practices: {STEPTOE_PRACTICES}.\n"
         f"Company: {company['name']} (sector: {company.get('sector') or 'unknown'}).\n"
-        f"How well does this company plausibly need Steptoe's services? Reply with JSON "
-        f'{{"fit": 0.0-1.0, "note": "<6 words on the best-fit practice>"}}. JSON only.'
+        f"How well does this company plausibly need Steptoe's services?{pick}\n"
+        f'Reply with JSON {{"fit": 0.0-1.0, "note": "<6 words on best-fit practice>"'
+        + (', "practice": "<from the list>"' if catalog else '') + '}. JSON only.'
     )
+    fit, note, practice = 0.5, "", ""
     try:
-        msg = client.messages.create(model=MODEL, max_tokens=120,
+        msg = client.messages.create(model=MODEL, max_tokens=160,
                                      messages=[{"role": "user", "content": prompt}])
         text = msg.content[0].text.strip().strip("`")
         if text.startswith("json"):
             text = text[4:]
         data = json.loads(text[text.find("{"):text.rfind("}") + 1])
         fit, note = float(data.get("fit", 0.5)), str(data.get("note", ""))[:120]
+        practice = str(data.get("practice", ""))[:120]
     except Exception:
-        fit, note = 0.5, ""
+        pass
+    cross = practice if practice and practice.strip().lower() not in USER_PRACTICES else None
     if not DRY:
         db.update_company(company["id"], {
             "firm_fit": fit, "firm_fit_note": note,
             "firm_fit_updated_at": dt.datetime.utcnow().isoformat(),
+            "cross_sell_practice": cross,
         })
     return fit, note
 
@@ -109,6 +125,7 @@ def main():
 
     contacts = db.get_contacts()
     companies = {c["id"]: c for c in db.get_companies_full()}
+    catalog = [p["name"] for p in db.get("practice_areas?select=name&status=eq.active&order=name.asc")]
     signals = db.get("signals?select=company_id,type,score_impact,proximity_weight,"
                      "event_date,title,summary&dismissed=eq.false")
     biz = db.get("business_origination?select=contact_id")
@@ -161,7 +178,7 @@ def main():
         triggers = min(trig, 1.0)
 
         # --- firm fit (cached, refreshed on cadence) + business-in ---
-        ff, ff_note = (firm_fit(client, co, company_due_soon.get(co["id"], False))
+        ff, ff_note = (firm_fit(client, co, company_due_soon.get(co["id"], False), catalog)
                        if co else (0.5, ""))
         business = 1.0 if c["id"] in biz_contacts else 0.0
 

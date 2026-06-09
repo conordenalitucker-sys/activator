@@ -42,6 +42,7 @@ create table if not exists companies (
   firm_fit        numeric,     -- 0-1, Claude-cached: how well the company fits Steptoe's practices
   firm_fit_note   text,
   firm_fit_updated_at timestamptz,  -- refreshed on a ~3-month cadence (sooner if a contact is due)
+  cross_sell_practice text,    -- best-fit practice OUTSIDE litigation/appeals (for colleague suggestions)
   notes           text,
   created_at      timestamptz default now(),
   updated_at      timestamptz default now()

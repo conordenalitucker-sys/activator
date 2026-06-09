@@ -62,10 +62,26 @@ def build():
     goal = cfg.get("daily_goal_count", 4)
     contacts = db.get_contacts()
     companies = db.get_companies_map()
+    co_full = {c["id"]: c for c in db.get_companies_full()}
     signals = db.get_signals(limit=400)
     sig_by_co = {}
     for s in signals:
         sig_by_co.setdefault(s.get("company_id"), []).append(s)
+
+    # Roster maps for cross-sell colleague suggestions.
+    practices = {p["name"].lower(): p["id"] for p in db.get("practice_areas?select=id,name")}
+    atts = {a["id"]: a for a in db.get("attorneys?select=id,name,status")}
+    prac_to_atts = {}
+    for ln in db.get("attorney_practices?select=attorney_id,practice_area_id"):
+        prac_to_atts.setdefault(ln["practice_area_id"], []).append(ln["attorney_id"])
+
+    def colleagues(practice_name, n=4):
+        pid = practices.get((practice_name or "").lower())
+        if not pid:
+            return []
+        names = [atts[a]["name"] for a in prac_to_atts.get(pid, [])
+                 if atts.get(a) and atts[a].get("status") == "active"]
+        return names[:n]
 
     def org(c):
         return companies.get(c.get("company_id"), "") if c.get("company_id") else ""
@@ -104,6 +120,12 @@ def build():
                 for s in sigs(c))
         last = parse_date(c.get("last_contacted_at"))
         last_txt = f"{(TODAY - last).days}d ago" if last else "never"
+        cross = co_full.get(c.get("company_id"), {}).get("cross_sell_practice")
+        coll = colleagues(cross) if (show_signals and cross) else []
+        cross_html = (
+            f'<div style="margin:4px 0;padding:6px 8px;background:#ebf8ff;border-radius:4px;'
+            f'font-size:12px;color:#2c5282;">Outside your litigation/appeals focus — '
+            f'<b>{cross}</b>. Colleagues to involve: {", ".join(coll)}.</div>') if coll else ""
         return (
             f'<div style="margin:12px 0;padding:10px;border-left:3px solid #2b6cb0;background:#f7fafc;">'
             f'<div style="font-size:15px;"><b>{c["name"]}</b> '
@@ -112,7 +134,7 @@ def build():
             f'<div style="font-size:13px;color:#444;margin:4px 0;">{c.get("opportunity_rationale") or ""}</div>'
             f'<div style="font-size:12px;color:#777;">last contact: {last_txt} &middot; '
             f'cadence: {c.get("cadence_tier") or "—"} &middot; pref: {c.get("comm_preference") or "—"}</div>'
-            f'{sg}</div>')
+            f'{cross_html}{sg}</div>')
 
     button = (
         f'<div style="margin:14px 0;"><a href="{APP_URL}" '
