@@ -132,6 +132,17 @@ def org_name(c):
     return companies.get(c.get("company_id"), "") if c.get("company_id") else ""
 
 
+def interest_catalog():
+    s = set()
+    for c in contacts:
+        for i in (c.get("interests") or []):
+            s.add(i)
+    return sorted(s)
+
+
+INTEREST_CATALOG = interest_catalog()
+
+
 def render_contact_card(c):
     ds = days_since(c)
     last = f"{ds}d ago" if ds is not None else "never"
@@ -141,6 +152,8 @@ def render_contact_card(c):
         st.caption(f"Type: {c.get('contact_type') or '—'} · "
                    f"Priority: {c.get('manual_priority') or '—'}/5 · "
                    f"Pref: {c.get('comm_preference') or '—'}")
+        if c.get("interests"):
+            st.caption("Interests: " + ", ".join(c["interests"]))
         if c.get("personal_notes"):
             st.write(c["personal_notes"])
         with st.form(f"log_{c['id']}"):
@@ -193,16 +206,30 @@ if page == "Today":
     st.divider()
     st.subheader("Log other BD")
     st.caption("Did something not on the list (a call, an event, a hallway chat)? Log it here.")
+    NEW_CONTACT = "➕ New contact…"
     with st.form("log_adhoc"):
         names = {f"{c['name']} — {org_name(c)}": c["id"] for c in contacts}
         cols = st.columns(4)
-        who = cols[0].selectbox("Contact", list(names.keys()))
+        who = cols[0].selectbox("Contact", [NEW_CONTACT] + list(names.keys()))
         ttype = cols[1].selectbox("Touch type", TOUCH_TYPES)
         channel = cols[2].selectbox("Channel", CHANNELS)
         minutes = cols[3].number_input("Minutes", 0, 600, 15, step=5)
+        st.caption(f"Pick **{NEW_CONTACT}** to add someone new — fill these in:")
+        nc1, nc2 = st.columns(2)
+        new_name = nc1.text_input("New contact name")
+        new_org = nc2.text_input("New contact organization (optional)")
         notes = st.text_input("Notes (optional)")
         if st.form_submit_button("➕ Log other BD"):
-            do_log(names[who], ttype, channel, minutes, notes)
+            if who == NEW_CONTACT:
+                if not new_name.strip():
+                    st.error("Enter a name for the new contact.")
+                    st.stop()
+                company_id = db.ensure_company(new_org) if new_org.strip() else None
+                created = db.insert_contact({"name": new_name.strip(), "company_id": company_id})
+                cid = created[0]["id"]
+            else:
+                cid = names[who]
+            do_log(cid, ttype, channel, minutes, notes)
             st.rerun()
 
 
@@ -234,6 +261,7 @@ elif page == "Contacts":
         "Name": c["name"],
         "Organization": org_name(c),
         "Type": c.get("contact_type") or "",
+        "Interests": ", ".join(c.get("interests") or []),
         "Priority": c.get("manual_priority") or "",
         "Cadence": c.get("cadence_tier") or "",
         "Last contact": (days_since(c) is not None) and f"{days_since(c)}d ago" or "never",
@@ -265,15 +293,25 @@ elif page == "Contacts":
                                     index=SENIORITY_OPTS.index(c["seniority"]) if c.get("seniority") in SENIORITY_OPTS else len(SENIORITY_OPTS) - 1)
             priority = st.slider("Manual priority", 1, 5, int(c.get("manual_priority") or 3),
                                  help="Your ranking. The opportunity score (coming soon) sits beside this, never overwrites it.")
+            cur_int = c.get("interests") or []
+            int_opts = sorted(set(INTEREST_CATALOG) | set(cur_int))
+            interests_sel = st.multiselect(
+                "Interests (topics they care about)", int_opts, default=cur_int,
+                help="e.g. first amendment, casino regulation, sports betting. "
+                     "These will feed the opportunity score and which news raises this contact.")
+            new_interests = st.text_input("Add new interests (comma-separated)")
             notes = st.text_area("Information learned / relationship notes (public info only)",
                                  c.get("personal_notes") or "", height=120)
             if st.form_submit_button("💾 Save"):
+                merged_int = sorted(set(interests_sel) |
+                                    {x.strip() for x in new_interests.split(",") if x.strip()})
                 db.update_contact(c["id"], {
                     "name": name, "title": title or None, "email": email or None,
                     "phone": phone or None, "location": location or None,
                     "linkedin_url": linkedin or None, "contact_type": ctype,
                     "comm_preference": comm, "cadence_tier": cadence,
                     "seniority": seniority, "manual_priority": priority,
+                    "interests": merged_int,
                     "personal_notes": notes or None,
                 })
                 refresh()
@@ -299,6 +337,8 @@ elif page == "Add contact":
         color = a.selectbox("Priority color", ["Green", "Blue", "Purple"], index=1)
         cadence = b.selectbox("Cadence", CADENCE_OPTS, index=CADENCE_OPTS.index("bimonthly"))
         priority = st.slider("Manual priority", 1, 5, 3)
+        add_interests = st.text_input("Interests (comma-separated)",
+                                      help="e.g. first amendment, casino regulation, sports betting")
         notes = st.text_area("Relationship notes (public info only)")
         if st.form_submit_button("➕ Add contact"):
             if not name.strip():
@@ -313,7 +353,9 @@ elif page == "Add contact":
                     "name": name.strip(), "title": title or None, "company_id": company_id,
                     "email": email or None, "phone": phone or None, "location": location or None,
                     "contact_type": ctype, "priority_color": color, "cadence_tier": cadence,
-                    "manual_priority": priority, "personal_notes": notes or None,
+                    "manual_priority": priority,
+                    "interests": [x.strip() for x in add_interests.split(",") if x.strip()],
+                    "personal_notes": notes or None,
                 })
                 refresh()
                 st.success(f"Added {name}.")

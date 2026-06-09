@@ -61,6 +61,7 @@ create table if not exists contacts (
   priority_color   text check (priority_color in ('Green','Blue','Purple')),
   cadence_tier     text check (cadence_tier in ('weekly','monthly','bimonthly','quarterly','biannual','annual','dormant')),
   tags             text[] default '{}',
+  interests        text[] default '{}',   -- topics they care about (e.g. first amendment, sports betting)
   last_contacted_at timestamptz,
   created_at       timestamptz default now(),
   updated_at       timestamptz default now()
