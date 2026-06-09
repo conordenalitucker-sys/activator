@@ -30,7 +30,7 @@ WORKSHEET = "Contacts"
 
 HEADERS = [
     "City", "Name", "Organization", "Email", "Phone", "Type of Contact",
-    "Priority", "Cadence", "Interests", "Last Contact", "Information Learned",
+    "Priority", "Opportunity", "Cadence", "Interests", "Last Contact", "Information Learned",
 ]
 
 
@@ -78,6 +78,7 @@ def main():
             c.get("phone") or "",
             c.get("contact_type") or "",
             c.get("priority_color") or "",
+            c.get("opportunity_score") if c.get("opportunity_score") is not None else "",
             c.get("cadence_tier") or "",
             ", ".join(c.get("interests") or []),
             (c.get("last_contacted_at") or "")[:10],
