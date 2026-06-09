@@ -33,6 +33,12 @@ create table if not exists companies (
   sec_cik         text,
   stock_ticker    text,
   monitored_feeds jsonb default '{}'::jsonb,
+  industries      text[] default '{}',
+  watch_terms     text[] default '{}',
+  home_state      text,
+  track_state_regulators boolean default false,
+  segment_focus   text,        -- narrow big parents to the contact's unit, e.g. "Amazon Studios"
+  jurisdiction_focus text,     -- e.g. "California" — narrows court/news monitoring
   notes           text,
   created_at      timestamptz default now(),
   updated_at      timestamptz default now()

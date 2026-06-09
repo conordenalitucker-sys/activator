@@ -83,14 +83,40 @@ def main():
     creds = Credentials.from_service_account_file(str(SA_FILE), scopes=scopes)
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id_from_url(SHEET_FILE.read_text().strip()))
-    try:
-        ws = sh.worksheet(WORKSHEET)
-    except gspread.WorksheetNotFound:
-        ws = sh.add_worksheet(title=WORKSHEET, rows=len(rows) + 10, cols=len(HEADERS))
-    ws.clear()
-    ws.update(rows, value_input_option="RAW")
-    ws.freeze(rows=1)
-    print(f"Synced {len(contacts)} contacts to Google Sheet worksheet '{WORKSHEET}'.")
+
+    def write_tab(title, values):
+        try:
+            ws = sh.worksheet(title)
+        except gspread.WorksheetNotFound:
+            ws = sh.add_worksheet(title=title, rows=len(values) + 10, cols=len(values[0]))
+        ws.clear()
+        ws.update(values, value_input_option="RAW")
+        ws.freeze(rows=1)
+
+    write_tab(WORKSHEET, rows)
+    print(f"Synced {len(contacts)} contacts to worksheet '{WORKSHEET}'.")
+
+    # --- Signals tab: mirror monitoring signals so everything's in one place ---
+    company_names = {c["id"]: c["name"] for c in supa_get(cfg, "companies?select=id,name")}
+    entity_names = {e["id"]: e["name"] for e in supa_get(cfg, "entities?select=id,name")}
+    sigs = supa_get(cfg, "signals?select=*&dismissed=eq.false"
+                         "&order=event_date.desc.nullslast,created_at.desc&limit=500")
+    sig_headers = ["Date", "Company", "Entity", "Type", "Score", "Title", "Summary", "Source", "URL"]
+    sig_rows = [sig_headers]
+    for s in sigs:
+        sig_rows.append([
+            (s.get("event_date") or "")[:10],
+            company_names.get(s.get("company_id"), ""),
+            entity_names.get(s.get("entity_id"), "") if s.get("entity_id") else "",
+            s.get("type") or "",
+            s.get("score_impact") or "",
+            s.get("title") or "",
+            s.get("summary") or "",
+            s.get("source") or "",
+            s.get("url") or "",
+        ])
+    write_tab("Signals", sig_rows)
+    print(f"Synced {len(sigs)} signals to worksheet 'Signals'.")
 
 
 if __name__ == "__main__":

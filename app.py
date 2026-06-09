@@ -147,8 +147,8 @@ def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None):
 
 # ---------------------------------------------------------------------------
 st.sidebar.title("📇 Project Activator")
-page = st.sidebar.radio("Go to", ["Today", "Contacts", "Add contact",
-                                  "Business In", "Activity", "Settings"])
+page = st.sidebar.radio("Go to", ["Today", "Signals", "Contacts", "Companies",
+                                  "Add contact", "Business In", "Activity", "Settings"])
 st.sidebar.caption("Public info + relationship notes only — no confidential matter details.")
 
 contacts = load_contacts()
@@ -489,6 +489,118 @@ elif page == "Activity":
     st.dataframe(pd.DataFrame([{"Touch type": k, "Count": v}
                                for k, v in sorted(by_type.items(), key=lambda kv: -kv[1])]),
                  width="stretch", hide_index=True)
+
+
+# ============================== SIGNALS ===================================
+elif page == "Signals":
+    st.header("Signals")
+    st.caption("Public trigger events around your contacts' companies, corporate families, "
+               "industries, and interests. Found by the monitoring job; Claude-filtered for relevance.")
+    try:
+        sigs = db.get_signals(limit=300)
+    except Exception:
+        st.info("No signals yet — run the monitoring job.")
+        st.stop()
+    co_name = {c["id"]: c["name"] for c in db.get_companies_full()}
+    if not sigs:
+        st.info("No signals yet. The monitoring job will populate these.")
+    else:
+        types = sorted({s.get("type") for s in sigs if s.get("type")})
+        f1, f2 = st.columns(2)
+        tfilter = f1.multiselect("Type", types)
+        cfilter = f2.multiselect("Company", sorted({co_name.get(s["company_id"], "?") for s in sigs}))
+        shown = [s for s in sigs
+                 if (not tfilter or s.get("type") in tfilter)
+                 and (not cfilter or co_name.get(s["company_id"]) in cfilter)]
+        st.caption(f"{len(shown)} signals (highest BD relevance first)")
+        for s in sorted(shown, key=lambda s: -(s.get("score_impact") or 0)):
+            head = (f"[{s.get('type')}] {co_name.get(s['company_id'], '?')} · "
+                    f"score {s.get('score_impact')} · {s.get('event_date') or ''} — "
+                    f"{(s.get('title') or '')[:80]}")
+            with st.expander(head):
+                st.write(s.get("summary") or "")
+                if s.get("url"):
+                    st.markdown(f"[source]({s['url']}) · {s.get('source', '')}")
+                if st.button("Dismiss", key=f"dis_{s['id']}"):
+                    db.dismiss_signal(s["id"])
+                    refresh()
+                    st.rerun()
+
+
+# ============================== COMPANIES =================================
+elif page == "Companies":
+    st.header("Companies & monitoring")
+    cos = db.get_companies_full()
+    if not cos:
+        st.info("No companies yet.")
+    else:
+        names = {c["name"]: c for c in cos}
+        co = names[st.selectbox("Company", list(names.keys()))]
+
+        st.subheader("Monitoring settings")
+        with st.form("company_mon"):
+            sector = st.text_input("Sector / industry", co.get("sector") or "")
+            segment = st.text_input("Segment focus (narrow big parents, e.g. 'Amazon Studios')",
+                                    co.get("segment_focus") or "",
+                                    help="For large companies, the contact's specific unit. "
+                                         "Monitoring uses this instead of the broad parent name.")
+            juris = st.text_input("Jurisdiction focus (e.g. 'California')",
+                                  co.get("jurisdiction_focus") or "",
+                                  help="Narrows court + news monitoring to this state/region.")
+            home_state = st.text_input("Home state (e.g. CA — used for state regulators)",
+                                       co.get("home_state") or "")
+            industries = st.text_input("Industries to monitor (comma-separated)",
+                                       ", ".join(co.get("industries") or []))
+            watch = st.text_input("Custom watch terms (comma-separated)",
+                                  ", ".join(co.get("watch_terms") or []))
+            track_reg = st.checkbox("Track this company's STATE regulators",
+                                    value=bool(co.get("track_state_regulators")),
+                                    help="Turn on to monitor the home-state regulator "
+                                         "(e.g. gaming/insurance/utility commissions).")
+            if st.form_submit_button("💾 Save monitoring settings"):
+                try:
+                    db.update_company(co["id"], {
+                        "sector": sector or None, "home_state": home_state or None,
+                        "segment_focus": segment or None, "jurisdiction_focus": juris or None,
+                        "industries": [x.strip() for x in industries.split(",") if x.strip()],
+                        "watch_terms": [x.strip() for x in watch.split(",") if x.strip()],
+                        "track_state_regulators": track_reg,
+                    })
+                    refresh()
+                    st.success("Saved.")
+                    st.rerun()
+                except Exception:
+                    st.warning("Run migration 003 in the SQL Editor to enable these fields.")
+
+        st.subheader("Corporate family & entities to monitor")
+        st.caption("Add parents, subsidiaries, affiliates, peers, or industry entities — "
+                   "including private ones (e.g. Flynt Management Group → Hustler, Hustler Casino).")
+        ents = db.get_entities(co["id"])
+        if ents:
+            st.dataframe(pd.DataFrame([{
+                "Name": e["name"], "Relationship": e.get("type"),
+                "Monitored": "✓" if e.get("enabled", True) else "—",
+            } for e in ents]), width="stretch", hide_index=True)
+        with st.form("add_entity"):
+            cc = st.columns([2, 1, 1])
+            en = cc[0].text_input("Entity name")
+            etype = cc[1].selectbox("Relationship", ["parent", "subsidiary", "affiliate",
+                                    "peer-competitor", "customer-supplier", "co-defendant", "industry"])
+            emon = cc[2].checkbox("Monitor", value=True)
+            if st.form_submit_button("➕ Add entity"):
+                if en.strip():
+                    db.insert_entity({"name": en.strip(), "type": etype,
+                                      "related_company_id": co["id"], "enabled": emon,
+                                      "source": "manual"})
+                    refresh()
+                    st.success(f"Added {en}.")
+                    st.rerun()
+        if ents:
+            rm = st.selectbox("Remove an entity", ["—"] + [e["name"] for e in ents])
+            if st.button("Remove selected") and rm != "—":
+                db.hard_delete_entity(next(e["id"] for e in ents if e["name"] == rm))
+                refresh()
+                st.rerun()
 
 
 # ============================== SETTINGS ===================================

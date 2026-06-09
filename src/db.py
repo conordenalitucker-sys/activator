@@ -127,3 +127,66 @@ def get_business() -> list:
 
 def insert_business(fields: dict):
     return post("business_origination", fields)
+
+
+# --- companies / entities / signals (monitoring) ---------------------------
+
+def get_companies_full() -> list:
+    return get("companies?select=*&order=name.asc")
+
+
+def update_company(company_id: str, fields: dict):
+    return patch(f"companies?id=eq.{company_id}", fields)
+
+
+def get_entities(company_id: str = None) -> list:
+    q = "entities?select=*&order=name.asc"
+    if company_id:
+        q = f"entities?select=*&related_company_id=eq.{company_id}&order=name.asc"
+    return get(q)
+
+
+def insert_entity(fields: dict):
+    return post("entities", fields)
+
+
+def delete_entity(entity_id: str):
+    return patch(f"entities?id=eq.{entity_id}", {"enabled": False})  # soft-disable
+
+
+def hard_delete_entity(entity_id: str):
+    import requests as _r
+    r = _r.delete(f"{_base()}/rest/v1/entities?id=eq.{entity_id}",
+                  headers=_headers({"Prefer": "return=minimal"}), timeout=30)
+    r.raise_for_status()
+
+
+def get_signals(limit: int = 200, include_dismissed: bool = False) -> list:
+    q = (f"signals?select=*&order=event_date.desc.nullslast,created_at.desc&limit={limit}")
+    if not include_dismissed:
+        q += "&dismissed=eq.false"
+    return get(q)
+
+
+def signal_exists(company_id: str, url: str, title: str) -> bool:
+    import requests as _r
+    url = (url or "").replace("*", "%2A")
+    title = (title or "")[:200]
+    params = {"company_id": f"eq.{company_id}", "select": "id", "limit": "1"}
+    if url:
+        params["url"] = f"eq.{url}"
+    else:
+        params["title"] = f"eq.{title}"
+    r = _r.get(f"{_base()}/rest/v1/signals", headers=_headers(), params=params, timeout=30)
+    r.raise_for_status()
+    return len(r.json()) > 0
+
+
+def insert_signals(rows: list):
+    if not rows:
+        return None
+    return post("signals", rows, prefer="return=minimal")
+
+
+def dismiss_signal(signal_id: str):
+    return patch(f"signals?id=eq.{signal_id}", {"dismissed": True})
