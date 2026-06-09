@@ -3,7 +3,7 @@ name: Nightly monitoring
 
 on:
   schedule:
-    - cron: '0 12 * * *'   # 12:00 UTC = 5:00am PT — fresh before morning
+    - cron: '0 13 * * *'   # 13:00 UTC = 6:00am PDT (5:00am PST in winter; cron is UTC, no DST)
   workflow_dispatch: {}     # allow manual runs from the Actions tab
 
 jobs:
