@@ -54,9 +54,29 @@ def parse_date(s):
         return None
 
 
-def firm_fit(client, company):
-    """0-1 fit + short note, cached on the company row."""
-    if company.get("firm_fit") is not None:
+FIRM_FIT_MAX_AGE = 90      # recompute at least every ~3 months
+FIRM_FIT_DUE_AGE = 30      # recompute sooner if a contact is coming due
+DUE_SOON_DAYS = 14
+
+
+def needs_refit(company, due_soon):
+    if company.get("firm_fit") is None:
+        return True
+    ts = parse_date(company.get("firm_fit_updated_at"))
+    if ts is None:
+        return True
+    age = (TODAY - ts).days
+    if age >= FIRM_FIT_MAX_AGE:
+        return True
+    if due_soon and age >= FIRM_FIT_DUE_AGE:
+        return True
+    return False
+
+
+def firm_fit(client, company, due_soon=False):
+    """0-1 fit + short note. Cached on the company; refreshed on a ~3-month cadence
+    (sooner if a contact at the company is within DUE_SOON_DAYS of being due)."""
+    if not needs_refit(company, due_soon):
         return float(company["firm_fit"]), company.get("firm_fit_note") or ""
     prompt = (
         f"Steptoe LLP practices: {STEPTOE_PRACTICES}.\n"
@@ -75,7 +95,10 @@ def firm_fit(client, company):
     except Exception:
         fit, note = 0.5, ""
     if not DRY:
-        db.update_company(company["id"], {"firm_fit": fit, "firm_fit_note": note})
+        db.update_company(company["id"], {
+            "firm_fit": fit, "firm_fit_note": note,
+            "firm_fit_updated_at": dt.datetime.utcnow().isoformat(),
+        })
     return fit, note
 
 
@@ -94,6 +117,17 @@ def main():
     sig_by_co = {}
     for s in signals:
         sig_by_co.setdefault(s.get("company_id"), []).append(s)
+
+    # Which companies have a contact coming due soon (drives early firm-fit refresh).
+    company_due_soon = {}
+    for c in contacts:
+        interval = CADENCE_DAYS.get(c.get("cadence_tier"))
+        if not interval:
+            continue
+        last = parse_date(c.get("last_contacted_at"))
+        days_until = (interval - (TODAY - last).days) if last else -999
+        if days_until <= DUE_SOON_DAYS:
+            company_due_soon[c.get("company_id")] = True
 
     for c in contacts:
         co = companies.get(c.get("company_id"))
@@ -126,8 +160,9 @@ def main():
                 top_sig = (contrib, s)
         triggers = min(trig, 1.0)
 
-        # --- firm fit (cached) + business-in ---
-        ff, ff_note = firm_fit(client, co) if co else (0.5, "")
+        # --- firm fit (cached, refreshed on cadence) + business-in ---
+        ff, ff_note = (firm_fit(client, co, company_due_soon.get(co["id"], False))
+                       if co else (0.5, ""))
         business = 1.0 if c["id"] in biz_contacts else 0.0
 
         score01 = (w["firm_fit"] * ff + w["triggers"] * triggers

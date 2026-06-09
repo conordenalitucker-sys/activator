@@ -25,13 +25,17 @@ jobs:
           mkdir -p secrets
           printf '%s' "$GSA" > secrets/google-service-account.json
           printf '%s' "$SHEET_URL" > secrets/SHEET.txt
-      - name: Run monitoring + sheet sync
+      - name: Run monitoring, scoring, sheet sync, daily email
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           COURTLISTENER_TOKEN: ${{ secrets.COURTLISTENER_TOKEN }}
+          GMAIL_SENDER: ${{ secrets.GMAIL_SENDER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
         run: |
           python src/monitor.py
           python src/score.py
           python src/sheets_sync.py
+          python src/daily_email.py

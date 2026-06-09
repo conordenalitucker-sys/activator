@@ -41,6 +41,7 @@ create table if not exists companies (
   jurisdiction_focus text,     -- e.g. "California" — narrows court/news monitoring
   firm_fit        numeric,     -- 0-1, Claude-cached: how well the company fits Steptoe's practices
   firm_fit_note   text,
+  firm_fit_updated_at timestamptz,  -- refreshed on a ~3-month cadence (sooner if a contact is due)
   notes           text,
   created_at      timestamptz default now(),
   updated_at      timestamptz default now()
