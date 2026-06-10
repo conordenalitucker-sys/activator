@@ -112,7 +112,8 @@ def suggest_message(client, c, org_name, top_sig):
         if not text:
             return None
         return archetype, text
-    except Exception:
+    except Exception as e:
+        sys.stderr.write(f"  draft failed for {c.get('name')}: {str(e)[:100]}\n")
         return None
 
 
@@ -122,7 +123,8 @@ def build():
     client = None
     try:
         client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
-    except Exception:
+    except Exception as e:
+        sys.stderr.write(f"WARNING: no Anthropic client, email will omit suggestions: {str(e)[:100]}\n")
         client = None
     contacts = db.get_contacts()
     companies = db.get_companies_map()

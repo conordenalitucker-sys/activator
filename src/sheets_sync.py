@@ -31,7 +31,12 @@ WORKSHEET = "Contacts"
 HEADERS = [
     "City", "Name", "Organization", "Email", "Phone", "Type of Contact",
     "Priority", "Opportunity", "Cadence", "Interests", "Last Contact", "Information Learned",
+    "id",  # used to match sheet edits back to the database (don't delete)
 ]
+
+# Columns the user may edit in the sheet that flow BACK into Supabase.
+PRIORITY_COLORS = {"Green", "Blue", "Purple"}
+CADENCE_TIERS = {"weekly", "monthly", "bimonthly", "quarterly", "biannual", "annual", "dormant"}
 
 
 def load_env() -> dict:
@@ -56,6 +61,15 @@ def supa_get(cfg, path):
     return json.loads(urllib.request.urlopen(req).read())
 
 
+def supa_patch(cfg, path, body):
+    data = json.dumps(body).encode()
+    req = urllib.request.Request(f"{cfg['base']}/rest/v1/{path}", data=data, method="PATCH")
+    req.add_header("apikey", cfg["key"])
+    req.add_header("Authorization", f"Bearer {cfg['key']}")
+    req.add_header("Content-Type", "application/json")
+    urllib.request.urlopen(req).read()
+
+
 def sheet_id_from_url(url: str) -> str:
     m = re.search(r"/d/([a-zA-Z0-9-_]+)", url)
     if not m:
@@ -63,8 +77,63 @@ def sheet_id_from_url(url: str) -> str:
     return m.group(1)
 
 
+def sync_from_sheet(cfg, sh, contacts_by_id):
+    """Pull user edits from the Contacts tab back into Supabase. Two-way for a safe set
+    of fields: Priority (color), Cadence, Interests, Information Learned. Matches rows by
+    the hidden 'id' column; validates enums; only writes fields that actually changed."""
+    try:
+        ws = sh.worksheet(WORKSHEET)
+    except gspread.WorksheetNotFound:
+        return 0
+    values = ws.get_all_values()
+    if len(values) < 2 or "id" not in values[0]:
+        return 0
+    hdr = {name: i for i, name in enumerate(values[0])}
+    if not all(n in hdr for n in ("id", "Priority", "Cadence", "Interests", "Information Learned")):
+        return 0
+
+    changed = 0
+    for row in values[1:]:
+        def cell(name):
+            i = hdr[name]
+            return row[i].strip() if i < len(row) else ""
+        cid = cell("id")
+        c = contacts_by_id.get(cid)
+        if not cid or not c:
+            continue
+        upd = {}
+        color = cell("Priority")
+        if color in PRIORITY_COLORS and color != (c.get("priority_color") or ""):
+            upd["priority_color"] = color
+        cad = cell("Cadence")
+        if cad in CADENCE_TIERS and cad != (c.get("cadence_tier") or ""):
+            upd["cadence_tier"] = cad
+        interests = [x.strip() for x in cell("Interests").split(",") if x.strip()]
+        if interests != (c.get("interests") or []):
+            upd["interests"] = interests
+        notes = cell("Information Learned")
+        if notes != (c.get("personal_notes") or ""):
+            upd["personal_notes"] = notes or None
+        if upd:
+            supa_patch(cfg, f"contacts?id=eq.{cid}", upd)
+            changed += 1
+    return changed
+
+
 def main():
     cfg = load_env()
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_file(str(SA_FILE), scopes=scopes)
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(sheet_id_from_url(SHEET_FILE.read_text().strip()))
+
+    # 1) Pull any edits the user made in the sheet back into Supabase FIRST.
+    contacts = supa_get(cfg, "contacts?select=*&order=manual_priority.desc,name.asc")
+    n = sync_from_sheet(cfg, sh, {c["id"]: c for c in contacts})
+    if n:
+        print(f"Applied {n} edit(s) from the sheet back to Supabase.")
+
+    # 2) Re-pull (reflecting those edits) and overwrite the sheet from the DB.
     contacts = supa_get(cfg, "contacts?select=*&order=manual_priority.desc,name.asc")
     companies = {c["id"]: c["name"] for c in supa_get(cfg, "companies?select=id,name")}
 
@@ -83,12 +152,8 @@ def main():
             ", ".join(c.get("interests") or []),
             (c.get("last_contacted_at") or "")[:10],
             c.get("personal_notes") or "",
+            c.get("id") or "",
         ])
-
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    creds = Credentials.from_service_account_file(str(SA_FILE), scopes=scopes)
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(sheet_id_from_url(SHEET_FILE.read_text().strip()))
 
     def write_tab(title, values):
         try:

@@ -665,9 +665,12 @@ elif page == "Companies":
             emon = cc[2].checkbox("Monitor", value=True)
             if st.form_submit_button("➕ Add entity"):
                 if en.strip():
+                    prox = {"parent": 1.0, "subsidiary": 1.0, "affiliate": 0.8,
+                            "peer-competitor": 0.6, "customer-supplier": 0.6,
+                            "co-defendant": 0.7, "industry": 0.4}.get(etype, 0.8)
                     db.insert_entity({"name": en.strip(), "type": etype,
                                       "related_company_id": co["id"], "enabled": emon,
-                                      "source": "manual"})
+                                      "source": "manual", "proximity_weight": prox})
                     refresh()
                     st.success(f"Added {en}.")
                     st.rerun()

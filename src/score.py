@@ -111,8 +111,8 @@ def firm_fit(client, company, due_soon=False, catalog=None):
         data = json.loads(text[text.find("{"):text.rfind("}") + 1])
         fit, note = float(data.get("fit", 0.5)), str(data.get("note", ""))[:120]
         practice = str(data.get("practice", ""))[:120]
-    except Exception:
-        pass
+    except Exception as e:
+        sys.stderr.write(f"  firm_fit parse failed for {company.get('name')}: {str(e)[:100]}\n")
     cross = practice if practice and practice.strip().lower() not in USER_PRACTICES else None
     if not DRY:
         db.update_company(company["id"], {

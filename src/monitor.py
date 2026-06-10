@@ -178,8 +178,12 @@ def classify(client, company, entities, candidates):
     try:
         return json.loads(text)
     except Exception:
-        start, end = text.find("["), text.rfind("]")
-        return json.loads(text[start:end + 1]) if start >= 0 and end > start else []
+        try:
+            start, end = text.find("["), text.rfind("]")
+            return json.loads(text[start:end + 1]) if start >= 0 and end > start else []
+        except Exception as e:
+            sys.stderr.write(f"  classify parse failed: {str(e)[:80]}\n")
+            return []
 
 
 def main():
