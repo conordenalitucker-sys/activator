@@ -139,6 +139,18 @@ def update_company(company_id: str, fields: dict):
     return patch(f"companies?id=eq.{company_id}", fields)
 
 
+def merge_companies(source_id: str, target_id: str):
+    """Move all references from a duplicate company onto a canonical one, then delete
+    the duplicate. Reassigns contacts, entities, and signals."""
+    patch(f"contacts?company_id=eq.{source_id}", {"company_id": target_id})
+    patch(f"entities?related_company_id=eq.{source_id}", {"related_company_id": target_id})
+    patch(f"signals?company_id=eq.{source_id}", {"company_id": target_id})
+    import requests as _r
+    r = _r.delete(f"{_base()}/rest/v1/companies?id=eq.{source_id}",
+                  headers=_headers({"Prefer": "return=minimal"}), timeout=30)
+    r.raise_for_status()
+
+
 def get_entities(company_id: str = None) -> list:
     q = "entities?select=*&order=name.asc"
     if company_id:

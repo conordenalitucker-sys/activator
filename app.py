@@ -7,7 +7,9 @@ and drafting layer on in later phases.
 from __future__ import annotations
 
 import datetime as dt
+import difflib
 import os
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -48,6 +50,51 @@ CHANNEL_LABEL = {"text": "text / DM"}
 
 def channel_label(x):
     return CHANNEL_LABEL.get(x, x)
+
+
+_CO_ABBREV = {"la": "los angeles", "ny": "new york", "nyc": "new york city",
+              "sf": "san francisco", "dc": "washington dc"}
+_CO_SUFFIX = {"inc", "incorporated", "llc", "llp", "lp", "ltd", "plc", "corp",
+              "corporation", "co", "company", "group", "holdings", "the"}
+
+
+def _norm_company(name):
+    s = re.sub(r"[^a-z0-9 ]", " ", (name or "").lower())
+    toks = []
+    for t in s.split():
+        toks.extend(_CO_ABBREV.get(t, t).split())
+    return " ".join(t for t in toks if t and t not in _CO_SUFFIX)
+
+
+# Role/title words that got mixed into the company field on import — ignore them when
+# matching so "Disney/Hulu (IP)" and "Disney/Hulu (Litigation)" are seen as one company.
+_ROLE_STOP = {"gc", "coo", "ceo", "cfo", "cto", "evp", "svp", "vp", "president", "counsel",
+              "litigation", "regulatory", "ip", "manager", "director", "head", "chief",
+              "associate", "deputy", "general", "former", "founder", "board", "boards",
+              "various", "hr", "compliance", "football", "public", "interest", "managing",
+              "p180", "advisory", "office"}
+
+
+def _dist_tokens(name):
+    return set(_norm_company(name).split()) - _ROLE_STOP
+
+
+def suggest_duplicate_companies(cos):
+    info = [(c["id"], c["name"], _norm_company(c["name"]), _dist_tokens(c["name"])) for c in cos]
+    pairs = []
+    for i in range(len(info)):
+        for j in range(i + 1, len(info)):
+            a, b = info[i], info[j]
+            shared = a[3] & b[3]
+            ratio = difflib.SequenceMatcher(None, a[2], b[2]).ratio() if a[2] and b[2] else 0
+            hit = (len(shared) >= 2
+                   or (shared and min(len(a[3]), len(b[3])) <= 2 and any(len(t) >= 4 for t in shared))
+                   or (a[2] and a[2] == b[2]) or ratio >= 0.86)
+            if hit:
+                conf = max(ratio, len(shared) / max(len(a[3] | b[3]), 1))
+                pairs.append((a[:3], b[:3], round(conf, 2)))
+    pairs.sort(key=lambda p: -p[2])
+    return pairs
 
 # Use a fixed app timezone so "today" is consistent everywhere — the cloud server
 # runs in UTC, which would otherwise roll over to tomorrow in the evening Pacific.
@@ -611,10 +658,43 @@ elif page == "Companies":
         st.info("No companies yet.")
     else:
         names = {c["name"]: c for c in cos}
+
+        with st.expander("🔧 Standardize & merge duplicate companies"):
+            dups = suggest_duplicate_companies(cos)
+            if dups:
+                st.caption("Likely duplicates — choose which name to keep, then merge "
+                           "(moves the other's contacts, entities, and signals over):")
+                for a, b, ratio in dups[:15]:
+                    cc = st.columns([3, 1])
+                    keep = cc[0].selectbox(f"{a[1]}  ↔  {b[1]}  ({int(ratio * 100)}%) — keep:",
+                                           [a[1], b[1]], key=f"dup_{a[0]}_{b[0]}")
+                    if cc[1].button("Merge", key=f"mg_{a[0]}_{b[0]}"):
+                        target, source = (a, b) if keep == a[1] else (b, a)
+                        db.merge_companies(source[0], target[0])
+                        refresh()
+                        st.success(f"Merged {source[1]} into {target[1]}.")
+                        st.rerun()
+            else:
+                st.caption("No likely duplicates detected.")
+            st.divider()
+            st.caption("Manual merge (for anything not auto-detected):")
+            mc = st.columns([2, 2, 1])
+            src = mc[0].selectbox("Merge this", list(names.keys()), key="msrc")
+            tgt = mc[1].selectbox("…into this", list(names.keys()), key="mtgt")
+            if mc[2].button("Merge", key="manual_merge"):
+                if src != tgt:
+                    db.merge_companies(names[src]["id"], names[tgt]["id"])
+                    refresh()
+                    st.success(f"Merged {src} into {tgt}.")
+                    st.rerun()
+                else:
+                    st.warning("Pick two different companies.")
+
         co = names[st.selectbox("Company", list(names.keys()))]
 
         st.subheader("Monitoring settings")
         with st.form("company_mon"):
+            cname = st.text_input("Company name", co.get("name") or "")
             sector = st.text_input("Sector / industry", co.get("sector") or "")
             segment = st.text_input("Segment focus (narrow big parents, e.g. 'Amazon Studios')",
                                     co.get("segment_focus") or "",
@@ -636,6 +716,7 @@ elif page == "Companies":
             if st.form_submit_button("💾 Save monitoring settings"):
                 try:
                     db.update_company(co["id"], {
+                        "name": cname.strip() or co["name"],
                         "sector": sector or None, "home_state": home_state or None,
                         "segment_focus": segment or None, "jurisdiction_focus": juris or None,
                         "industries": [x.strip() for x in industries.split(",") if x.strip()],
