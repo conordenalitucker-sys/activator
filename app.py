@@ -429,8 +429,8 @@ elif page == "Contacts":
         "Organization": org_name(c),
         "Type": c.get("contact_type") or "",
         "Interests": ", ".join(c.get("interests") or []),
-        "Priority": c.get("manual_priority") or "",
-        "Opp.": c.get("opportunity_score") if c.get("opportunity_score") is not None else "",
+        "Priority": str(c.get("manual_priority") or ""),
+        "Opp.": str(c.get("opportunity_score")) if c.get("opportunity_score") is not None else "",
         "Cadence": c.get("cadence_tier") or "",
         "Last contact": (days_since(c) is not None) and f"{days_since(c)}d ago" or "never",
         "Overdue": "⚠️" if is_overdue(c) else "",
@@ -689,36 +689,34 @@ elif page == "Companies":
     else:
         names = {c["name"]: c for c in cos}
 
-        with st.expander("🔧 Standardize & merge duplicate companies"):
+        with st.expander("🔧 Standardize & merge companies"):
             dups = suggest_duplicate_companies(cos)
             if dups:
-                st.caption("Likely duplicates — choose which name to keep, then merge "
-                           "(moves the other's contacts, entities, and signals over):")
-                for a, b, ratio in dups[:15]:
-                    cc = st.columns([3, 1])
-                    keep = cc[0].selectbox(f"{a[1]}  ↔  {b[1]}  ({int(ratio * 100)}%) — keep:",
-                                           [a[1], b[1]], key=f"dup_{a[0]}_{b[0]}")
-                    if cc[1].button("Merge", key=f"mg_{a[0]}_{b[0]}"):
-                        target, source = (a, b) if keep == a[1] else (b, a)
-                        db.merge_companies(source[0], target[0])
-                        refresh()
-                        st.success(f"Merged {source[1]} into {target[1]}.")
-                        st.rerun()
-            else:
-                st.caption("No likely duplicates detected.")
-            st.divider()
-            st.caption("Manual merge (for anything not auto-detected):")
-            mc = st.columns([2, 2, 1])
-            src = mc[0].selectbox("Merge this", list(names.keys()), key="msrc")
-            tgt = mc[1].selectbox("…into this", list(names.keys()), key="mtgt")
-            if mc[2].button("Merge", key="manual_merge"):
-                if src != tgt:
-                    db.merge_companies(names[src]["id"], names[tgt]["id"])
+                hint = "; ".join(sorted({f"{a[1]} ⇄ {b[1]}" for a, b, _ in dups})[:10])
+                st.caption(f"Likely duplicates (for reference): {hint}")
+            st.caption("Pick any companies to combine, give the result a final name, and choose "
+                       "which company's details to keep. All their contacts, entities, and "
+                       "signals move onto the merged company. You can edit fields afterward.")
+            sel = st.multiselect("Companies to merge together (pick 2 or more)", list(names.keys()))
+            if len(sel) >= 2:
+                comp = pd.DataFrame([{
+                    "Company": s, "Sector": names[s].get("sector") or "",
+                    "Industries": ", ".join(names[s].get("industries") or []),
+                    "Watch terms": ", ".join(names[s].get("watch_terms") or []),
+                    "Contacts": str(sum(1 for c in contacts if c.get("company_id") == names[s]["id"])),
+                } for s in sel])
+                st.dataframe(comp, hide_index=True, width="stretch")
+                new_name = st.text_input("Final company name", sel[0])
+                base = st.selectbox("Keep details (sector, industries, terms, etc.) from", sel,
+                                    help="The merged company keeps this one's field values. "
+                                         "Edit anything afterward in the form below.")
+                if st.button("✅ Merge selected into one"):
+                    target_id = names[base]["id"]
+                    sources = [names[s]["id"] for s in sel if names[s]["id"] != target_id]
+                    db.merge_companies_into(target_id, sources, new_name=new_name.strip() or None)
                     refresh()
-                    st.success(f"Merged {src} into {tgt}.")
+                    st.success(f"Merged {len(sel)} companies into '{new_name}'.")
                     st.rerun()
-                else:
-                    st.warning("Pick two different companies.")
 
         co = names[st.selectbox("Company", list(names.keys()))]
 

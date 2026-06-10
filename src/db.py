@@ -149,16 +149,38 @@ def update_company(company_id: str, fields: dict):
     return patch(f"companies?id=eq.{company_id}", fields)
 
 
+def _delete_company(company_id: str):
+    import requests as _r
+    r = _r.delete(f"{_base()}/rest/v1/companies?id=eq.{company_id}",
+                  headers=_headers({"Prefer": "return=minimal"}), timeout=30)
+    r.raise_for_status()
+
+
 def merge_companies(source_id: str, target_id: str):
-    """Move all references from a duplicate company onto a canonical one, then delete
-    the duplicate. Reassigns contacts, entities, and signals."""
+    """Move all references from a duplicate company onto a canonical one, then delete it."""
     patch(f"contacts?company_id=eq.{source_id}", {"company_id": target_id})
     patch(f"entities?related_company_id=eq.{source_id}", {"related_company_id": target_id})
     patch(f"signals?company_id=eq.{source_id}", {"company_id": target_id})
-    import requests as _r
-    r = _r.delete(f"{_base()}/rest/v1/companies?id=eq.{source_id}",
-                  headers=_headers({"Prefer": "return=minimal"}), timeout=30)
-    r.raise_for_status()
+    _delete_company(source_id)
+
+
+def merge_companies_into(target_id: str, source_ids: list, new_name: str = None,
+                         fields: dict = None):
+    """Merge any number of companies into `target_id`: reassign every source's contacts,
+    entities, and signals onto the target, delete the sources, then set the final name and
+    any chosen field values on the target."""
+    for sid in source_ids:
+        if sid == target_id:
+            continue
+        patch(f"contacts?company_id=eq.{sid}", {"company_id": target_id})
+        patch(f"entities?related_company_id=eq.{sid}", {"related_company_id": target_id})
+        patch(f"signals?company_id=eq.{sid}", {"company_id": target_id})
+        _delete_company(sid)
+    upd = dict(fields or {})
+    if new_name:
+        upd["name"] = new_name
+    if upd:
+        patch(f"companies?id=eq.{target_id}", upd)
 
 
 def get_entities(company_id: str = None) -> list:
