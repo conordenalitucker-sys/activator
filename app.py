@@ -1,8 +1,8 @@
 """Project Activator — dashboard (Streamlit).
 
-Phase 2: Today queue (cadence-driven) + daily progress, Contacts list/filter/edit
-with the manual-priority slider, and Add-contact. Opportunity score, monitoring,
-and drafting layer on in later phases.
+Today queue + daily progress, Contacts list/filter/edit, Companies (monitoring +
+merge), Signals, Business In, Activity, Settings. Opportunity score, monitoring,
+and email drafting run via nightly jobs.
 """
 from __future__ import annotations
 
