@@ -192,6 +192,50 @@ def main():
     write_tab("Signals", sig_rows)
     print(f"Synced {len(sigs)} signals to worksheet 'Signals'.")
 
+    # --- Companies tab: company data + its subs/affiliates + the people linked to it ---
+    companies_full = supa_get(cfg, "companies?select=*&order=name.asc")
+    entities = supa_get(cfg, "entities?select=*&order=name.asc")
+    ent_by_co, people_by_co = {}, {}
+    for e in entities:
+        ent_by_co.setdefault(e.get("related_company_id"), []).append(e)
+    for c in contacts:
+        people_by_co.setdefault(c.get("company_id"), []).append(c.get("name") or "")
+    co_headers = ["Name", "Sector", "Industries", "Subsidiaries / Affiliates", "Contacts (people)",
+                  "Watch Terms", "Negative Terms", "Segment Focus", "Jurisdiction",
+                  "Cross-Sell Practice", "Firm Fit", "Home State", "id"]
+    co_rows = [co_headers]
+    for co in companies_full:
+        subs = "; ".join(f"{e.get('name')} ({e.get('type')})" for e in ent_by_co.get(co["id"], []))
+        co_rows.append([
+            co.get("name") or "", co.get("sector") or "",
+            ", ".join(co.get("industries") or []), subs,
+            ", ".join(people_by_co.get(co["id"], [])),
+            ", ".join(co.get("watch_terms") or []), ", ".join(co.get("negative_terms") or []),
+            co.get("segment_focus") or "", co.get("jurisdiction_focus") or "",
+            co.get("cross_sell_practice") or "",
+            str(co.get("firm_fit")) if co.get("firm_fit") is not None else "",
+            co.get("home_state") or "", co.get("id") or "",
+        ])
+    write_tab("Companies", co_rows)
+    print(f"Synced {len(companies_full)} companies to worksheet 'Companies'.")
+
+    # --- Entities tab: every subsidiary/affiliate/peer and the company it belongs to ---
+    co_name = {co["id"]: co["name"] for co in companies_full}
+    ent_headers = ["Entity", "Type", "Parent Company", "Relationship Note",
+                   "Proximity", "Monitored", "id"]
+    ent_rows = [ent_headers]
+    for e in entities:
+        ent_rows.append([
+            e.get("name") or "", e.get("type") or "",
+            co_name.get(e.get("related_company_id"), ""),
+            e.get("relationship_note") or "",
+            str(e.get("proximity_weight")) if e.get("proximity_weight") is not None else "",
+            "yes" if e.get("enabled", True) else "no",
+            e.get("id") or "",
+        ])
+    write_tab("Entities", ent_rows)
+    print(f"Synced {len(entities)} entities to worksheet 'Entities'.")
+
 
 if __name__ == "__main__":
     main()
