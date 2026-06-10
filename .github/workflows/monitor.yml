@@ -37,5 +37,6 @@ jobs:
         run: |
           python src/monitor.py
           python src/score.py
+          python src/suggest.py
           python src/sheets_sync.py
           python src/daily_email.py

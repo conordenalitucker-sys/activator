@@ -94,9 +94,17 @@ def compute_opportunity(c, company, signals, biz_ids, weights, today):
 
     score01 = (w["firm_fit"] * ff + w["triggers"] * triggers
                + w["relationship"] * relationship + w["business"] * business)
-    opp = round(100 * score01)
+
+    # Attention bonus: a relationship you've flagged as drifting (and are NOT ok with)
+    # gets pulled up the daily list. "ok" relationships add nothing.
+    traj, traj_ok = c.get("trajectory"), c.get("trajectory_ok")
+    attention = ({"apart": 0.20, "same": 0.10, "closer": 0.05}.get(traj, 0.0)
+                 if traj_ok is False else 0.0)
+    opp = round(100 * min(score01 + attention, 1.0))
 
     parts = []
+    if attention > 0:
+        parts.append(f"⚠️ drifting ({traj}), not ok — needs attention")
     if top and top[0] > 0.1:
         parts.append(f"signal: {(top[1].get('title') or '')[:60]}")
     if need > 0.7:

@@ -69,6 +69,8 @@ create table if not exists contacts (
   how_we_met       text,
   contact_type     text check (contact_type in ('client','past-client','prospect','professional','referral','friend')),
   manual_priority  int  check (manual_priority between 1 and 5),
+  trajectory       text check (trajectory in ('closer','same','apart')),  -- current relationship direction
+  trajectory_ok    boolean,           -- is the user OK with that direction?
   opportunity_score numeric,          -- 0-100, computed by src/score.py
   opportunity_rationale text,
   score_updated_at timestamptz,
@@ -130,6 +132,8 @@ create table if not exists interactions (
   channel         text check (channel in ('email','LinkedIn','call','in-person','event','text','other')),
   notes           text,
   duration_minutes int,
+  trajectory      text check (trajectory in ('closer','same','apart')),  -- relationship direction at this touch
+  trajectory_ok   boolean,
   was_suggested   boolean default false,
   suggested_type  text,
   daily_plan_id   uuid references daily_plan(id) on delete set null,

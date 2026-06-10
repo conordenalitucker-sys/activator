@@ -30,7 +30,8 @@ WORKSHEET = "Contacts"
 
 HEADERS = [
     "City", "Name", "Organization", "Email", "Phone", "Type of Contact",
-    "Priority", "Opportunity", "Cadence", "Interests", "Last Contact", "Information Learned",
+    "Priority", "Opportunity", "Cadence", "Trajectory", "Interests",
+    "Last Contact", "Information Learned",
     "id",  # used to match sheet edits back to the database (don't delete)
 ]
 
@@ -149,6 +150,8 @@ def main():
             c.get("priority_color") or "",
             c.get("opportunity_score") if c.get("opportunity_score") is not None else "",
             c.get("cadence_tier") or "",
+            (c.get("trajectory") or "") + (" — not ok" if c.get("trajectory")
+                                           and c.get("trajectory_ok") is False else ""),
             ", ".join(c.get("interests") or []),
             (c.get("last_contacted_at") or "")[:10],
             c.get("personal_notes") or "",

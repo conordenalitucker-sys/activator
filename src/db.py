@@ -238,3 +238,11 @@ def insert_signals(rows: list):
 
 def dismiss_signal(signal_id: str):
     return patch(f"signals?id=eq.{signal_id}", {"dismissed": True})
+
+
+def get_suggestions(status: str = "new") -> list:
+    return get(f"suggestions?status=eq.{status}&order=created_at.desc")
+
+
+def update_suggestion(suggestion_id: str, status: str):
+    return patch(f"suggestions?id=eq.{suggestion_id}", {"status": status})

@@ -192,7 +192,15 @@ def overdue_by(c):
     return ds - interval
 
 
-def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None):
+TRAJ_OPTS = ["—", "closer", "same", "apart"]
+
+
+def _traj(v):
+    return v if v in ("closer", "same", "apart") else None
+
+
+def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None,
+           trajectory=None, trajectory_ok=None):
     db.log_interaction({
         "contact_id": contact_id,
         "date": TODAY_ISO,
@@ -200,11 +208,17 @@ def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None):
         "channel": channel,
         "duration_minutes": minutes or None,
         "notes": notes or None,
+        "trajectory": trajectory,
+        "trajectory_ok": trajectory_ok if trajectory else None,
         "was_suggested": suggested_type is not None,
         "suggested_type": suggested_type,
         "logged_via": "button",
     })
-    db.update_contact(contact_id, {"last_contacted_at": TODAY_ISO})
+    upd = {"last_contacted_at": TODAY_ISO}
+    if trajectory:  # update the contact's CURRENT relationship state
+        upd["trajectory"] = trajectory
+        upd["trajectory_ok"] = trajectory_ok
+    db.update_contact(contact_id, upd)
     refresh()
 
 
@@ -229,7 +243,7 @@ def rescore():
 
 # ---------------------------------------------------------------------------
 st.sidebar.title("📇 Project Activator")
-page = st.sidebar.radio("Go to", ["Today", "Signals", "Contacts", "Companies",
+page = st.sidebar.radio("Go to", ["Today", "Suggestions", "Signals", "Contacts", "Companies",
                                   "Add contact", "Business In", "Activity", "Settings"])
 st.sidebar.caption("Public info + relationship notes only — no confidential matter details.")
 
@@ -278,6 +292,9 @@ def render_contact_card(c):
                    f"Priority: {c.get('manual_priority') or '—'}/5 · "
                    f"⭐ Opportunity: {c.get('opportunity_score') if c.get('opportunity_score') is not None else '—'}/100 · "
                    f"Pref: {c.get('comm_preference') or '—'}")
+        if c.get("trajectory"):
+            st.caption(f"Relationship: {c['trajectory']}"
+                       + ("" if c.get("trajectory_ok") else " ⚠️ (not ok with this)"))
         if c.get("opportunity_rationale"):
             st.caption(c["opportunity_rationale"])
         for s in signals_for(c):
@@ -294,8 +311,12 @@ def render_contact_card(c):
             minutes = cols[2].number_input("Minutes", 0, 600, 10, step=5, key=f"mn_{c['id']}")
             cols[3].caption("Logging resets the cadence clock.")
             notes = st.text_input("Notes (optional)", key=f"nt_{c['id']}")
+            tcol = st.columns([2, 2])
+            traj = tcol[0].selectbox("Relationship now", TRAJ_OPTS, key=f"tj_{c['id']}")
+            tok = tcol[1].checkbox("I'm OK with this", value=True, key=f"tk_{c['id']}")
             if st.form_submit_button("✅ Log it"):
-                do_log(c["id"], ttype, channel, minutes, notes, suggested_type="cadence-due")
+                do_log(c["id"], ttype, channel, minutes, notes, suggested_type="cadence-due",
+                       trajectory=_traj(traj), trajectory_ok=tok)
                 st.rerun()
 
 
@@ -370,10 +391,20 @@ if page == "Today":
                                         step=5, key=f"em_{it['id']}")
                 nt = st.text_area("Notes (add their response / new info here)",
                                   it.get("notes") or "", key=f"en_{it['id']}", height=70)
+                etj = st.columns([2, 2])
+                tj = etj[0].selectbox("Relationship", TRAJ_OPTS,
+                                      index=TRAJ_OPTS.index(it["trajectory"]) if it.get("trajectory") in TRAJ_OPTS else 0,
+                                      key=f"etj_{it['id']}")
+                tk = etj[1].checkbox("OK with it",
+                                     value=it.get("trajectory_ok") if it.get("trajectory_ok") is not None else True,
+                                     key=f"etk_{it['id']}")
                 if st.form_submit_button("💾 Update touch"):
                     db.update_interaction(it["id"], {
                         "type": tt, "channel": ch,
-                        "duration_minutes": mn or None, "notes": nt or None})
+                        "duration_minutes": mn or None, "notes": nt or None,
+                        "trajectory": _traj(tj), "trajectory_ok": tk if _traj(tj) else None})
+                    if _traj(tj):  # reflect the latest read on the contact's current state
+                        db.update_contact(it["contact_id"], {"trajectory": _traj(tj), "trajectory_ok": tk})
                     refresh()
                     st.success("Updated.")
                     st.rerun()
@@ -393,6 +424,9 @@ if page == "Today":
         new_name = nc1.text_input("New contact name")
         new_org = nc2.text_input("New contact organization (optional)")
         notes = st.text_input("Notes (optional)")
+        tc = st.columns([2, 2])
+        adhoc_traj = tc[0].selectbox("Relationship now", TRAJ_OPTS, key="adhoc_tj")
+        adhoc_ok = tc[1].checkbox("I'm OK with this", value=True, key="adhoc_tk")
         if st.form_submit_button("➕ Log other BD"):
             if who == NEW_CONTACT:
                 if not new_name.strip():
@@ -403,7 +437,8 @@ if page == "Today":
                 cid = created[0]["id"]
             else:
                 cid = names[who]
-            do_log(cid, ttype, channel, minutes, notes)
+            do_log(cid, ttype, channel, minutes, notes,
+                   trajectory=_traj(adhoc_traj), trajectory_ok=adhoc_ok)
             st.rerun()
 
 
@@ -649,6 +684,37 @@ elif page == "Activity":
     st.dataframe(pd.DataFrame([{"Touch type": k, "Count": v}
                                for k, v in sorted(by_type.items(), key=lambda kv: -kv[1])]),
                  width="stretch", hide_index=True)
+
+
+# ============================== SUGGESTIONS ===============================
+elif page == "Suggestions":
+    st.header("Suggestions")
+    st.caption("Proactive ideas: people to add, new subsidiaries found, likely job changes, "
+               "and priority/relationship flags. Accept (clears it) or dismiss.")
+    KIND_LABEL = {"priority-flag": "⚑ Priority / relationship", "new-contact": "➕ New contact",
+                  "new-entity": "🏢 New subsidiary / affiliate", "data-update": "✏️ Job change",
+                  "new-feed": "📡 New feed"}
+    try:
+        sugg = db.get_suggestions("new")
+    except Exception:
+        st.info("No suggestions yet — the nightly job will populate these.")
+        st.stop()
+    if not sugg:
+        st.success("No open suggestions — you're all caught up.")
+    for s in sugg:
+        cols = st.columns([6, 1, 1])
+        cols[0].markdown(f"**{KIND_LABEL.get(s.get('kind'), s.get('kind'))}** — {s.get('body')}")
+        if cols[1].button("✓ Accept", key=f"acc_{s['id']}"):
+            db.update_suggestion(s["id"], "accepted")
+            refresh()
+            st.rerun()
+        if cols[2].button("✕ Dismiss", key=f"dis_s_{s['id']}"):
+            db.update_suggestion(s["id"], "dismissed")
+            refresh()
+            st.rerun()
+    if sugg:
+        st.caption("Accepting clears it from the list — then add the contact/entity or adjust "
+                   "priority via the relevant page.")
 
 
 # ============================== SIGNALS ===================================
