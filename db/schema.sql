@@ -35,6 +35,7 @@ create table if not exists companies (
   monitored_feeds jsonb default '{}'::jsonb,
   industries      text[] default '{}',
   watch_terms     text[] default '{}',
+  negative_terms  text[] default '{}',   -- exclude topics: AI drops news primarily about these
   home_state      text,
   track_state_regulators boolean default false,
   segment_focus   text,        -- narrow big parents to the contact's unit, e.g. "Amazon Studios"

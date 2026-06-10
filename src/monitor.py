@@ -146,6 +146,10 @@ def classify(client, company, entities, candidates):
     if juris:
         focus += (f"JURISDICTION FOCUS: only keep items in or clearly relevant to "
                   f"{juris} (e.g. {juris} litigation/regulators).\n")
+    neg = company.get("negative_terms") or []
+    if neg:
+        focus += (f"EXCLUDE (negative topics): DROP any item primarily about: "
+                  f"{', '.join(neg)}. These are off-topic for this company.\n")
     lines = []
     for i, c in enumerate(candidates):
         lines.append(f'{i}. [{c["kind"]}] "{c["title"]}" ({c.get("date") or "n/d"}; '

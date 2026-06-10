@@ -739,6 +739,10 @@ elif page == "Companies":
                                        ", ".join(co.get("industries") or []))
             watch = st.text_input("Custom watch terms (comma-separated)",
                                   ", ".join(co.get("watch_terms") or []))
+            negatives = st.text_input("Negative topics — exclude (comma-separated)",
+                                      ", ".join(co.get("negative_terms") or []),
+                                      help="The AI filter drops news primarily about these "
+                                           "(e.g. for Flynt: 'import, shipping').")
             track_reg = st.checkbox("Track this company's STATE regulators",
                                     value=bool(co.get("track_state_regulators")),
                                     help="Turn on to monitor the home-state regulator "
@@ -751,6 +755,7 @@ elif page == "Companies":
                         "segment_focus": segment or None, "jurisdiction_focus": juris or None,
                         "industries": [x.strip() for x in industries.split(",") if x.strip()],
                         "watch_terms": [x.strip() for x in watch.split(",") if x.strip()],
+                        "negative_terms": [x.strip() for x in negatives.split(",") if x.strip()],
                         "track_state_regulators": track_reg,
                     })
                     refresh()
