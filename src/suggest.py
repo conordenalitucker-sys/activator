@@ -43,6 +43,8 @@ def main():
 
     # --- rule-based flags ---
     for c in contacts:
+        if c.get("outreach_paused"):
+            continue  # paused: don't nudge to re-engage (pause silences routine prompts)
         opp = c.get("opportunity_score") or 0
         pr = c.get("manual_priority") or 3
         if opp >= 60 and pr <= 2:

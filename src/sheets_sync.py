@@ -35,6 +35,9 @@ HEADERS = [
     "id",  # used to match sheet edits back to the database (don't delete)
 ]
 
+# Friendly trajectory labels (DB stores closer/same/apart).
+_TRAJ_LABELS = {"closer": "growing closer", "same": "staying steady", "apart": "growing apart"}
+
 # Columns the user may edit in the sheet that flow BACK into Supabase.
 PRIORITY_COLORS = {"Green", "Blue", "Purple"}
 CADENCE_TIERS = {"weekly", "monthly", "bimonthly", "quarterly", "biannual", "annual", "dormant"}
@@ -150,8 +153,9 @@ def main():
             c.get("priority_color") or "",
             c.get("opportunity_score") if c.get("opportunity_score") is not None else "",
             c.get("cadence_tier") or "",
-            (c.get("trajectory") or "") + (" — not ok" if c.get("trajectory")
-                                           and c.get("trajectory_ok") is False else ""),
+            (_TRAJ_LABELS.get(c.get("trajectory"), c.get("trajectory") or "")
+             + (" — want to do better" if c.get("trajectory")
+                and c.get("trajectory_ok") is False else "")),
             ", ".join(c.get("interests") or []),
             (c.get("last_contacted_at") or "")[:10],
             c.get("personal_notes") or "",

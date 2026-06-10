@@ -18,6 +18,10 @@ SENIORITY = {"decision-maker": 1.0, "influencer": 0.6, "staff": 0.3, "unknown": 
 SIGNAL_WINDOW_DAYS = 90
 DEFAULT_WEIGHTS = {"firm_fit": 0.10, "triggers": 0.40, "relationship": 0.35, "business": 0.15}
 MIN_CADENCE = 2
+# A paused contact is suppressed from routine cadence nudges, but a live signal at/above
+# this impact (score_impact * proximity_weight, within the window) is a "big development"
+# worth interrupting the pause for, so the contact still surfaces as an opportunity.
+BIG_SIGNAL_IMPACT = 0.5
 
 
 def parse_date(s):
@@ -53,6 +57,19 @@ def is_overdue(c, today):
 
 def opp_score(c):
     return c.get("opportunity_score") or 0
+
+
+def has_big_signal(c, sig_by_company, today, threshold=BIG_SIGNAL_IMPACT):
+    """True if the contact's company has a live (in-window) signal whose impact
+    (score_impact * proximity_weight) is big enough to interrupt a pause."""
+    for s in sig_by_company.get(c.get("company_id"), []):
+        ev = parse_date(s.get("event_date")) or today
+        if (today - ev).days > SIGNAL_WINDOW_DAYS:
+            continue
+        impact = float(s.get("score_impact") or 0) * float(s.get("proximity_weight") or 1)
+        if impact >= threshold:
+            return True
+    return False
 
 
 def resolve_weights(weights):
@@ -132,13 +149,22 @@ def select_daily_plan(contacts, sig_by_company, goal, today, min_cadence=MIN_CAD
     def has_sig(c):
         return len(sig_by_company.get(c.get("company_id"), [])) > 0
 
-    opp_pool = sorted([c for c in contacts if has_sig(c)],
+    def paused(c):
+        return bool(c.get("outreach_paused"))
+
+    # Pause suppresses ROUTINE outreach (cadence nudges), but monitoring keeps running:
+    # a paused contact with a big live development still surfaces as an opportunity touchpoint.
+    opp_eligible = [c for c in contacts
+                    if not paused(c) or has_big_signal(c, sig_by_company, today)]
+    cad_eligible = [c for c in contacts if not paused(c)]
+
+    opp_pool = sorted([c for c in opp_eligible if has_sig(c)],
                       key=lambda c: (-opp_score(c), -(c.get("manual_priority") or 0)))
     max_opp = max(goal - min_cadence, 0)
     opp_picks = opp_pool[:max_opp]
     picked = {c["id"] for c in opp_picks}
 
-    overdue_rest = [c for c in contacts if is_overdue(c, today) and c["id"] not in picked]
+    overdue_rest = [c for c in cad_eligible if is_overdue(c, today) and c["id"] not in picked]
     by_overdue = lambda c: (-(overdue_days(c, today) or 0), -(c.get("manual_priority") or 0))
     pure = sorted([c for c in overdue_rest if not has_sig(c)], key=by_overdue)
     withsig = sorted([c for c in overdue_rest if has_sig(c)], key=by_overdue)

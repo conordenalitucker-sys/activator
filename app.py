@@ -193,10 +193,54 @@ def overdue_by(c):
 
 
 TRAJ_OPTS = ["—", "closer", "same", "apart"]
+TRAJ_LABELS = {"—": "—", "closer": "growing closer",
+               "same": "staying steady", "apart": "growing apart"}
+OK_OPTS = ["OK with it", "I'd like to do better"]
+PAUSE_REVIEW_DAYS = 90
+
+
+def traj_label(v):
+    return TRAJ_LABELS.get(v, v or "—")
+
+
+def ok_to_bool(choice):
+    return choice == OK_OPTS[0]
+
+
+def bool_to_ok(val):
+    # default a missing flag to "OK with it"
+    return OK_OPTS[1] if val is False else OK_OPTS[0]
 
 
 def _traj(v):
     return v if v in ("closer", "same", "apart") else None
+
+
+def pause_contact(contact_id, reason=None):
+    review = (TODAY + dt.timedelta(days=PAUSE_REVIEW_DAYS)).isoformat()
+    db.update_contact(contact_id, {
+        "outreach_paused": True,
+        "paused_at": TODAY_ISO,
+        "pause_review_at": review,
+        "pause_reason": (reason or None),
+    })
+    refresh()
+
+
+def keep_paused(contact_id):
+    review = (TODAY + dt.timedelta(days=PAUSE_REVIEW_DAYS)).isoformat()
+    db.update_contact(contact_id, {"pause_review_at": review})
+    refresh()
+
+
+def resume_contact(contact_id):
+    db.update_contact(contact_id, {
+        "outreach_paused": False,
+        "paused_at": None,
+        "pause_review_at": None,
+        "pause_reason": None,
+    })
+    refresh()
 
 
 def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None,
@@ -293,8 +337,17 @@ def render_contact_card(c):
                    f"⭐ Opportunity: {c.get('opportunity_score') if c.get('opportunity_score') is not None else '—'}/100 · "
                    f"Pref: {c.get('comm_preference') or '—'}")
         if c.get("trajectory"):
-            st.caption(f"Relationship: {c['trajectory']}"
-                       + ("" if c.get("trajectory_ok") else " ⚠️ (not ok with this)"))
+            st.caption(f"Relationship trajectory: {traj_label(c['trajectory'])}"
+                       + ("" if c.get("trajectory_ok") is not False else " ⚠️ (you'd like to do better)"))
+        if c.get("outreach_paused"):
+            since = c.get("paused_at") or "—"
+            review = c.get("pause_review_at") or "—"
+            st.caption(f"⏸ Outreach paused since {since} · review due {review}"
+                       + (f" · {c['pause_reason']}" if c.get("pause_reason") else ""))
+            pcol = st.columns([1, 3])
+            if pcol[0].button("▶ Resume", key=f"resume_{c['id']}"):
+                resume_contact(c["id"])
+                st.rerun()
         if c.get("opportunity_rationale"):
             st.caption(c["opportunity_rationale"])
         for s in signals_for(c):
@@ -304,6 +357,14 @@ def render_contact_card(c):
             st.caption("Interests: " + ", ".join(c["interests"]))
         if c.get("personal_notes"):
             st.write(c["personal_notes"])
+        if not c.get("outreach_paused"):
+            with st.popover("⏸ Pause outreach"):
+                st.caption(f"Skips routine nudges; we'll re-ask in {PAUSE_REVIEW_DAYS} days. "
+                           "A big news development still surfaces this contact.")
+                preason = st.text_input("Reason (optional)", key=f"prsn_{c['id']}")
+                if st.button("Pause outreach", key=f"pause_{c['id']}"):
+                    pause_contact(c["id"], preason)
+                    st.rerun()
         with st.form(f"log_{c['id']}"):
             cols = st.columns(4)
             ttype = cols[0].selectbox("Touch type", TOUCH_TYPES, key=f"tt_{c['id']}")
@@ -312,8 +373,9 @@ def render_contact_card(c):
             cols[3].caption("Logging resets the cadence clock.")
             notes = st.text_input("Notes (optional)", key=f"nt_{c['id']}")
             tcol = st.columns([2, 2])
-            traj = tcol[0].selectbox("Relationship now", TRAJ_OPTS, key=f"tj_{c['id']}")
-            tok = tcol[1].checkbox("I'm OK with this", value=True, key=f"tk_{c['id']}")
+            traj = tcol[0].selectbox("Relationship trajectory", TRAJ_OPTS,
+                                     format_func=traj_label, key=f"tj_{c['id']}")
+            tok = ok_to_bool(tcol[1].radio("How you feel about it", OK_OPTS, key=f"tk_{c['id']}"))
             if st.form_submit_button("✅ Log it"):
                 do_log(c["id"], ttype, channel, minutes, notes, suggested_type="cadence-due",
                        trajectory=_traj(traj), trajectory_ok=tok)
@@ -361,12 +423,32 @@ if page == "Today":
         st.caption("Nobody overdue — you're current.")
 
     plan_ids = {c["id"] for c in opp_picks + cad_picks}
-    extra = sorted([c for c in contacts if is_overdue(c) and c["id"] not in plan_ids],
+    extra = sorted([c for c in contacts if is_overdue(c) and not c.get("outreach_paused")
+                    and c["id"] not in plan_ids],
                    key=lambda c: -overdue_by(c))
     if extra:
         with st.expander(f"Show {len(extra)} more overdue (optional)"):
             for c in extra[:25]:
                 render_contact_card(c)
+
+    # Paused contacts whose review date has arrived — decide whether to keep them paused.
+    review = sorted([c for c in contacts if c.get("outreach_paused")
+                     and (c.get("pause_review_at") or "9999") <= TODAY_ISO],
+                    key=lambda c: c.get("pause_review_at") or "")
+    if review:
+        st.subheader(f"⏸ Paused — needs review ({len(review)})")
+        st.caption(f"You paused these earlier. {PAUSE_REVIEW_DAYS} days have passed — "
+                   "keep paused or resume?")
+        for c in review:
+            rc = st.columns([3, 1, 1])
+            rc[0].markdown(f"**{c['name']}** — {org_name(c)}  ·  paused {c.get('paused_at') or '—'}"
+                           + (f"  ·  {c['pause_reason']}" if c.get("pause_reason") else ""))
+            if rc[1].button("Keep paused", key=f"keep_{c['id']}"):
+                keep_paused(c["id"])
+                st.rerun()
+            if rc[2].button("▶ Resume", key=f"revresume_{c['id']}"):
+                resume_contact(c["id"])
+                st.rerun()
 
     st.divider()
     with st.expander("✏️ Edit recent touches (last 5 days)"):
@@ -392,12 +474,13 @@ if page == "Today":
                 nt = st.text_area("Notes (add their response / new info here)",
                                   it.get("notes") or "", key=f"en_{it['id']}", height=70)
                 etj = st.columns([2, 2])
-                tj = etj[0].selectbox("Relationship", TRAJ_OPTS,
+                tj = etj[0].selectbox("Relationship trajectory", TRAJ_OPTS, format_func=traj_label,
                                       index=TRAJ_OPTS.index(it["trajectory"]) if it.get("trajectory") in TRAJ_OPTS else 0,
                                       key=f"etj_{it['id']}")
-                tk = etj[1].checkbox("OK with it",
-                                     value=it.get("trajectory_ok") if it.get("trajectory_ok") is not None else True,
-                                     key=f"etk_{it['id']}")
+                tk = ok_to_bool(etj[1].radio(
+                    "How you feel about it", OK_OPTS,
+                    index=OK_OPTS.index(bool_to_ok(it.get("trajectory_ok"))),
+                    key=f"etk_{it['id']}"))
                 if st.form_submit_button("💾 Update touch"):
                     db.update_interaction(it["id"], {
                         "type": tt, "channel": ch,
@@ -425,8 +508,9 @@ if page == "Today":
         new_org = nc2.text_input("New contact organization (optional)")
         notes = st.text_input("Notes (optional)")
         tc = st.columns([2, 2])
-        adhoc_traj = tc[0].selectbox("Relationship now", TRAJ_OPTS, key="adhoc_tj")
-        adhoc_ok = tc[1].checkbox("I'm OK with this", value=True, key="adhoc_tk")
+        adhoc_traj = tc[0].selectbox("Relationship trajectory", TRAJ_OPTS,
+                                     format_func=traj_label, key="adhoc_tj")
+        adhoc_ok = ok_to_bool(tc[1].radio("How you feel about it", OK_OPTS, key="adhoc_tk"))
         if st.form_submit_button("➕ Log other BD"):
             if who == NEW_CONTACT:
                 if not new_name.strip():
@@ -514,6 +598,9 @@ elif page == "Contacts":
                         f"{c.get('opportunity_rationale', '')}")
             priority = st.slider("Manual priority", 1, 5, int(c.get("manual_priority") or 3),
                                  help="Your ranking. The opportunity score sits beside it, never overwrites it.")
+            PCOLORS = ["Green", "Blue", "Purple"]
+            pcolor = st.selectbox("Priority color", PCOLORS,
+                                  index=PCOLORS.index(c["priority_color"]) if c.get("priority_color") in PCOLORS else 1)
             cur_int = c.get("interests") or []
             int_opts = sorted(set(INTEREST_CATALOG) | set(cur_int))
             interests_sel = st.multiselect(
@@ -539,6 +626,7 @@ elif page == "Contacts":
                     "linkedin_url": linkedin or None, "contact_type": ctype,
                     "comm_preference": comm, "cadence_tier": cadence,
                     "seniority": seniority, "manual_priority": priority,
+                    "priority_color": pcolor,
                     "interests": merged_int,
                     "personal_notes": notes or None,
                 })
