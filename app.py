@@ -358,11 +358,12 @@ def render_contact_card(c):
         if c.get("personal_notes"):
             st.write(c["personal_notes"])
         if not c.get("outreach_paused"):
-            with st.popover("⏸ Pause outreach"):
+            if st.selectbox("Outreach", ["Active", "⏸ Pause outreach…"],
+                            key=f"pmode_{c['id']}") == "⏸ Pause outreach…":
                 st.caption(f"Skips routine nudges; we'll re-ask in {PAUSE_REVIEW_DAYS} days. "
                            "A big news development still surfaces this contact.")
                 preason = st.text_input("Reason (optional)", key=f"prsn_{c['id']}")
-                if st.button("Pause outreach", key=f"pause_{c['id']}"):
+                if st.button("Confirm pause", key=f"pause_{c['id']}"):
                     pause_contact(c["id"], preason)
                     st.rerun()
         with st.form(f"log_{c['id']}"):
