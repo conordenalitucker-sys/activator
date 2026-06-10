@@ -341,6 +341,36 @@ if page == "Today":
                 render_contact_card(c)
 
     st.divider()
+    with st.expander("✏️ Edit recent touches (last 5 days)"):
+        st.caption("Someone reply or send new info? Edit the original touch — update the type, "
+                   "time, or add their response in the notes (no need to log a new outreach).")
+        recent = db.get_recent_interactions(5)
+        cname = {c["id"]: c["name"] for c in contacts}
+        if not recent:
+            st.caption("No touches logged in the last 5 days.")
+        for it in recent:
+            with st.form(f"edit_int_{it['id']}"):
+                st.markdown(f"**{cname.get(it.get('contact_id'), '?')}** · {it.get('date')} "
+                            f"· logged as {it.get('type')}/{it.get('channel')}")
+                ec = st.columns(3)
+                tt = ec[0].selectbox("Type", TOUCH_TYPES,
+                                     index=TOUCH_TYPES.index(it["type"]) if it.get("type") in TOUCH_TYPES else 0,
+                                     key=f"et_{it['id']}")
+                ch = ec[1].selectbox("Channel", CHANNELS, format_func=channel_label,
+                                     index=CHANNELS.index(it["channel"]) if it.get("channel") in CHANNELS else 0,
+                                     key=f"ec_{it['id']}")
+                mn = ec[2].number_input("Minutes", 0, 600, int(it.get("duration_minutes") or 0),
+                                        step=5, key=f"em_{it['id']}")
+                nt = st.text_area("Notes (add their response / new info here)",
+                                  it.get("notes") or "", key=f"en_{it['id']}", height=70)
+                if st.form_submit_button("💾 Update touch"):
+                    db.update_interaction(it["id"], {
+                        "type": tt, "channel": ch,
+                        "duration_minutes": mn or None, "notes": nt or None})
+                    refresh()
+                    st.success("Updated.")
+                    st.rerun()
+
     st.subheader("Log other BD")
     st.caption("Did something not on the list (a call, an event, a hallway chat)? Log it here.")
     NEW_CONTACT = "➕ New contact…"

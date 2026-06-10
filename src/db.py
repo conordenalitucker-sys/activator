@@ -112,6 +112,16 @@ def log_interaction(fields: dict):
     return post("interactions", fields, prefer="return=minimal")
 
 
+def get_recent_interactions(days: int = 5) -> list:
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days)).isoformat()
+    return get(f"interactions?date=gte.{cutoff}&select=*&order=date.desc,created_at.desc")
+
+
+def update_interaction(interaction_id: str, fields: dict):
+    return patch(f"interactions?id=eq.{interaction_id}", fields)
+
+
 def todays_minutes(today_iso: str) -> int:
     rows = get(f"interactions?date=eq.{today_iso}&select=duration_minutes")
     return sum((r.get("duration_minutes") or 0) for r in rows)
