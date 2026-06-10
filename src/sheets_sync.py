@@ -170,7 +170,10 @@ def main():
     # --- Signals tab: mirror monitoring signals so everything's in one place ---
     company_names = {c["id"]: c["name"] for c in supa_get(cfg, "companies?select=id,name")}
     entity_names = {e["id"]: e["name"] for e in supa_get(cfg, "entities?select=id,name")}
+    import datetime as _dt
+    cutoff = (_dt.date.today() - _dt.timedelta(days=90)).isoformat()
     sigs = supa_get(cfg, "signals?select=*&dismissed=eq.false"
+                         f"&or=(event_date.gte.{cutoff},event_date.is.null)"
                          "&order=event_date.desc.nullslast,created_at.desc&limit=500")
     sig_headers = ["Date", "Company", "Entity", "Type", "Score", "Title", "Summary", "Source", "URL"]
     sig_rows = [sig_headers]

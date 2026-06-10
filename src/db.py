@@ -173,10 +173,14 @@ def hard_delete_entity(entity_id: str):
     r.raise_for_status()
 
 
-def get_signals(limit: int = 200, include_dismissed: bool = False) -> list:
+def get_signals(limit: int = 200, include_dismissed: bool = False, since_days: int = 90) -> list:
     q = (f"signals?select=*&order=event_date.desc.nullslast,created_at.desc&limit={limit}")
     if not include_dismissed:
         q += "&dismissed=eq.false"
+    if since_days:
+        import datetime as _dt
+        cutoff = (_dt.date.today() - _dt.timedelta(days=since_days)).isoformat()
+        q += f"&or=(event_date.gte.{cutoff},event_date.is.null)"  # last N days OR undated
     return get(q)
 
 

@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 
@@ -230,6 +230,9 @@ def main():
                 time.sleep(0.8)  # be gentle with CourtListener's rate limit
             if len(candidates) >= MAX_CANDIDATES:
                 break
+        # Limit to the last 90 days (keep undated items, which are usually recent).
+        cutoff = (datetime.utcnow().date() - timedelta(days=90)).isoformat()
+        candidates = [c for c in candidates if not c.get("date") or c["date"] >= cutoff]
         if not candidates:
             print(f"- {company['name']}: 0 candidates")
             continue
