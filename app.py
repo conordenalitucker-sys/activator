@@ -29,8 +29,15 @@ for _k in ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_PUBLISHABLE_KEY"):
         os.environ[_k] = str(_secrets[_k])
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+import importlib  # noqa: E402
 import db  # noqa: E402
 import planning  # noqa: E402  (shared scoring + daily-plan core)
+
+# Streamlit Cloud re-runs app.py on each deploy but can keep imported modules cached in
+# memory, so newly-shipped db/planning functions may be missing until a manual reboot.
+# Reloading from disk on startup makes the app self-heal that without a reboot.
+importlib.reload(db)
+importlib.reload(planning)
 
 st.set_page_config(page_title="Project Activator", page_icon="📇", layout="wide")
 
