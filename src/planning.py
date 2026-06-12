@@ -72,6 +72,26 @@ def has_big_signal(c, sig_by_company, today, threshold=BIG_SIGNAL_IMPACT):
     return False
 
 
+def actionable_signal(c, sig_by_company, today, threshold=BIG_SIGNAL_IMPACT):
+    """The contact's strongest live signal that is BOTH highly relevant AND fresh,
+    or None. A signal only justifies an off-cadence touch if (a) it's high-impact
+    (score_impact * proximity_weight >= threshold) and (b) it broke AFTER you last
+    reached out. Once you've contacted someone, the same news stops re-surfacing
+    them day after day — only genuinely newer developments do."""
+    last = parse_date(c.get("last_contacted_at"))
+    best = None
+    for s in sig_by_company.get(c.get("company_id"), []):
+        ev = parse_date(s.get("event_date")) or today
+        if (today - ev).days > SIGNAL_WINDOW_DAYS:
+            continue
+        if last is not None and ev <= last:
+            continue  # you've already had the chance to act on this
+        impact = float(s.get("score_impact") or 0) * float(s.get("proximity_weight") or 1)
+        if impact >= threshold and (best is None or impact > best[0]):
+            best = (impact, s)
+    return best[1] if best else None
+
+
 def resolve_weights(weights):
     return {**DEFAULT_WEIGHTS,
             **{k: weights[k] for k in DEFAULT_WEIGHTS if weights and k in weights}}
@@ -142,9 +162,15 @@ def compute_opportunity(c, company, signals, biz_ids, weights, today):
 def select_daily_plan(contacts, sig_by_company, goal, today, min_cadence=MIN_CADENCE):
     """Unified pick logic for BOTH the dashboard Today list and the daily email.
     Returns (opp_picks, cad_picks):
-      opp_picks = contacts with a live signal, ranked by opportunity score.
+      opp_picks = contacts with an ACTIONABLE signal (highly relevant AND newer than
+                  their last contact), ranked by opportunity score. This same bar
+                  overrides a pause.
       cad_picks = overdue contacts (PREFER no-signal pure-cadence), >= min_cadence,
                   so news can't crowd out relationship-keeping.
+
+    A contact who is neither overdue on cadence nor has fresh high-impact news is NOT
+    surfaced — so people you've just reached out to don't reappear day after day on
+    stale signals.
     """
     def has_sig(c):
         return len(sig_by_company.get(c.get("company_id"), [])) > 0
@@ -152,19 +178,22 @@ def select_daily_plan(contacts, sig_by_company, goal, today, min_cadence=MIN_CAD
     def paused(c):
         return bool(c.get("outreach_paused"))
 
-    # Pause suppresses ROUTINE outreach (cadence nudges), but monitoring keeps running:
-    # a paused contact with a big live development still surfaces as an opportunity touchpoint.
-    opp_eligible = [c for c in contacts
-                    if not paused(c) or has_big_signal(c, sig_by_company, today)]
-    cad_eligible = [c for c in contacts if not paused(c)]
+    def actionable(c):
+        return actionable_signal(c, sig_by_company, today) is not None
 
-    opp_pool = sorted([c for c in opp_eligible if has_sig(c)],
+    # Opportunity branch: surface a contact off-cadence ONLY for a fresh, highly
+    # relevant development (impact >= BIG_SIGNAL_IMPACT and dated after the last
+    # contact). The same bar is what interrupts a pause, so monitoring still keeps
+    # working for paused contacts when something big and new actually happens.
+    opp_pool = sorted([c for c in contacts if actionable(c)],
                       key=lambda c: (-opp_score(c), -(c.get("manual_priority") or 0)))
     max_opp = max(goal - min_cadence, 0)
     opp_picks = opp_pool[:max_opp]
     picked = {c["id"] for c in opp_picks}
 
-    overdue_rest = [c for c in cad_eligible if is_overdue(c, today) and c["id"] not in picked]
+    # Cadence branch: only contacts actually overdue per their cadence, never paused.
+    overdue_rest = [c for c in contacts
+                    if not paused(c) and is_overdue(c, today) and c["id"] not in picked]
     by_overdue = lambda c: (-(overdue_days(c, today) or 0), -(c.get("manual_priority") or 0))
     pure = sorted([c for c in overdue_rest if not has_sig(c)], key=by_overdue)
     withsig = sorted([c for c in overdue_rest if has_sig(c)], key=by_overdue)
