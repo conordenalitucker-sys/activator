@@ -243,6 +243,67 @@ def resume_contact(contact_id):
     refresh()
 
 
+# --- vacation mode (migration 011) -----------------------------------------
+def _cfg_date(cfg, key):
+    return parse_date(cfg.get(key)) if cfg.get(key) else None
+
+
+def vacation_active(cfg):
+    """Vacation is active when today (PT) is within [vacation_start, vacation_end]
+    inclusive and both are set. Reads defensively (.get) so pre-migration the config
+    has no such keys and vacation is simply inactive."""
+    start = _cfg_date(cfg, "vacation_start")
+    end = _cfg_date(cfg, "vacation_end")
+    return bool(start and end and start <= TODAY <= end)
+
+
+def set_vacation(start, end):
+    db.update_config({
+        "vacation_start": start.isoformat(),
+        "vacation_end": end.isoformat(),
+        "vacation_last_email_date": None,  # let the next nightly run send a fresh start email
+    })
+    refresh()
+
+
+def clear_vacation():
+    db.update_config({
+        "vacation_start": None,
+        "vacation_end": None,
+        "vacation_last_email_date": None,
+    })
+    refresh()
+
+
+def vacation_controls(cfg, key_prefix):
+    """Start/end-date pickers + Save, and (if a vacation is set) a clear/end-early
+    button. Used on both Settings and Today. Returns nothing; persists via db."""
+    start = _cfg_date(cfg, "vacation_start")
+    end = _cfg_date(cfg, "vacation_end")
+    if start and end:
+        status = ("🏖 On vacation until " + end.isoformat()) if vacation_active(cfg) \
+            else f"Vacation set: {start.isoformat()} → {end.isoformat()}"
+        st.caption(status)
+    with st.form(f"{key_prefix}_vac_form"):
+        vc = st.columns(2)
+        vstart = vc[0].date_input("Vacation start", start or TODAY, key=f"{key_prefix}_vs")
+        vend = vc[1].date_input("Vacation end", end or (TODAY + dt.timedelta(days=7)),
+                                key=f"{key_prefix}_ve")
+        if st.form_submit_button("💾 Save vacation"):
+            if vend < vstart:
+                st.error("End date must be on or after the start date.")
+            else:
+                set_vacation(vstart, vend)
+                st.success("Vacation saved. Daily emails pause; you'll get a plan at the "
+                           "start and a check-in each Monday.")
+                st.rerun()
+    if start or end:
+        if st.button("✖ Clear / end vacation now", key=f"{key_prefix}_vac_clear"):
+            clear_vacation()
+            st.success("Vacation cleared — normal cadence resumes.")
+            st.rerun()
+
+
 def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None,
            trajectory=None, trajectory_ok=None):
     db.log_interaction({
@@ -386,6 +447,40 @@ def render_contact_card(c):
 # ============================== TODAY ======================================
 if page == "Today":
     st.header("Today")
+
+    # Vacation mode: show a banner + the current week's lighter plan instead of the
+    # normal daily queue. (vacation_active reads defensively, so pre-migration this is
+    # just False and Today behaves normally.)
+    on_vacation = vacation_active(cfg)
+    if on_vacation:
+        vend = _cfg_date(cfg, "vacation_end")
+        st.info(f"🏖 On vacation until {vend.isoformat() if vend else '—'}. "
+                "Daily emails are paused; here's a light plan for the week.")
+        vopp, vcad = planning.select_daily_plan(contacts, sig_by_company, 6, TODAY)
+        st.subheader("🔔 Opportunity-driven")
+        if vopp:
+            for c in vopp:
+                render_contact_card(c)
+        else:
+            st.caption("No fresh developments.")
+        st.subheader("🔁 Keeping cadence")
+        if vcad:
+            for c in vcad:
+                render_contact_card(c)
+        else:
+            st.caption("Nobody overdue.")
+        if st.button("✖ End vacation now"):
+            clear_vacation()
+            st.success("Vacation ended — normal cadence resumes.")
+            st.rerun()
+        st.stop()
+
+    with st.expander("🏖 I'm on vacation"):
+        try:
+            vacation_controls(cfg, "today")
+        except Exception:
+            st.warning("Run migration 011 in the Supabase SQL Editor to enable vacation mode.")
+
     done = todays_count()
     mins = todays_minutes()
     goal_min = cfg.get("daily_goal_minutes") or 0
@@ -975,3 +1070,14 @@ elif page == "Settings":
                               "daily_goal_minutes": int(new_min) or None})
             refresh()
             st.success("Settings saved.")
+
+    st.divider()
+    st.subheader("🏖 Vacation")
+    st.caption("While on vacation the normal daily/weekend emails pause. You get a light "
+               "BD plan at the start and a fresh check-in each Monday. Normal cadence "
+               "auto-resumes after the end date — no need to clear it.")
+    try:
+        vacation_controls(cfg, "settings")
+    except Exception:
+        st.warning("Run migration 011 in the Supabase SQL Editor to enable vacation mode "
+                   "(it adds vacation_start / vacation_end to the config table).")

@@ -7,7 +7,16 @@ Two sections so news never crowds out relationship-keeping:
                          there purely to stay in touch.
 Plus a "Record BD" button that opens the dashboard (handy on the phone).
 
-Run: python3 src/daily_email.py [--dry]
+Weekday/weekend/vacation behavior (all keyed off TODAY in America/Los_Angeles):
+  - Vacation active  : suppress normal emails; send a 4-6 item "vacation plan" at the
+                       start and a fresh 4-6 item check-in each Monday during the trip.
+  - Sunday           : send nothing.
+  - Saturday         : ONE "weekend BD plan" covering Sat+Sun, 3-5 touches.
+  - Mon-Fri          : the normal daily email (daily_goal_count).
+
+Run: python3 src/daily_email.py [--dry] [--date=YYYY-MM-DD]
+  --dry         compose & print, do NOT send (use to exercise every branch).
+  --date=...    simulate "today" in PT (testing only); defaults to the real PT date.
 Env: GMAIL_SENDER, GMAIL_APP_PASSWORD, RECIPIENT_EMAIL, optional ACTIVATOR_APP_URL.
 Python 3.9 compatible.
 """
@@ -27,7 +36,33 @@ import planning  # noqa: E402  (shared daily-plan selection)
 import anthropic  # noqa: E402
 
 DRY = "--dry" in sys.argv
-TODAY = dt.date.today()
+
+
+def _pt_today():
+    """Today in America/Los_Angeles (the cloud runs UTC, which would roll over to
+    tomorrow Pacific in the evening). Falls back to the local date if zoneinfo is
+    unavailable."""
+    try:
+        from zoneinfo import ZoneInfo
+        return dt.datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    except Exception:
+        return dt.date.today()
+
+
+def _arg_date():
+    """Optional --date=YYYY-MM-DD override (testing only)."""
+    for a in sys.argv:
+        if a.startswith("--date="):
+            try:
+                return dt.date.fromisoformat(a.split("=", 1)[1])
+            except ValueError:
+                sys.stderr.write(f"bad --date value: {a}\n")
+    return None
+
+
+TODAY = _arg_date() or _pt_today()
+WEEKEND_MIN, WEEKEND_MAX = 3, 5      # Saturday weekend plan touch range (cap 5)
+VACATION_MIN, VACATION_MAX = 4, 6    # vacation plan / weekly check-in range (cap 6)
 MIN_CADENCE = 2  # always include at least this many pure-cadence contacts
 MODEL = "claude-haiku-4-5-20251001"
 APP_URL = os.environ.get("ACTIVATOR_APP_URL", "https://m6frwjbqtmj52nscwqg3lt.streamlit.app")
@@ -117,9 +152,14 @@ def suggest_message(client, c, org_name, top_sig):
         return None
 
 
-def build():
+def build(goal=None, mode="daily"):
+    """Compose (subject, text, html). `mode` is one of 'daily', 'weekend', 'vacation'
+    and only affects framing (header/subject/intro); the picker is the SAME shared
+    select_daily_plan so the dashboard and email agree. `goal` overrides the config
+    daily_goal_count (weekend/vacation pass their own caps)."""
     cfg = db.get_config()
-    goal = cfg.get("daily_goal_count", 4)
+    if goal is None:
+        goal = cfg.get("daily_goal_count", 4)
     client = None
     try:
         client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
@@ -225,9 +265,27 @@ def build():
         + (f' &middot; <a href="{s["url"]}">link</a>' if s.get("url") else "") + '</li>'
         for s in top_sigs)
 
+    # Mode-specific framing (the picker is identical across modes).
+    if mode == "weekend":
+        sun = TODAY + dt.timedelta(days=1)
+        heading = f"Weekend BD plan — {TODAY:%a %b %-d}–{sun:%a %b %-d}"
+        subject = (f"Weekend BD plan — {TODAY:%b %-d}–{sun:%-d}: "
+                   f"{len(opp_picks)} opportunity, {len(cad_picks)} cadence")
+        text_intro = f"Weekend BD plan — {TODAY:%a %b %-d}–{sun:%a %b %-d} (covers Sat + Sun)"
+    elif mode == "vacation":
+        heading = f"Vacation BD plan — week of {TODAY:%A, %B %-d}"
+        subject = (f"Vacation BD plan — week of {TODAY:%b %-d}: "
+                   f"{len(opp_picks)} opportunity, {len(cad_picks)} cadence")
+        text_intro = (f"Vacation BD plan — week of {TODAY:%A, %B %-d}. "
+                      "A light touch list while you're away; nothing urgent.")
+    else:
+        heading = f"BD plan — {TODAY:%A, %B %-d}"
+        subject = f"BD plan — {TODAY:%b %-d}: {len(opp_picks)} opportunity, {len(cad_picks)} cadence"
+        text_intro = f"BD plan — {TODAY:%A, %B %-d}"
+
     html = (
         f'<div style="font-family:-apple-system,Segoe UI,Arial,sans-serif;max-width:640px;">'
-        f'<h2 style="color:#2b6cb0;margin-bottom:2px;">BD plan — {TODAY:%A, %B %-d}</h2>'
+        f'<h2 style="color:#2b6cb0;margin-bottom:2px;">{heading}</h2>'
         + button
         + f'<h3 style="color:#2b6cb0;margin:18px 0 2px;">🔔 Opportunity-driven '
           f'<span style="font-weight:normal;font-size:13px;color:#777;">(news &amp; developments)</span></h3>'
@@ -248,13 +306,12 @@ def build():
             kind, body = sug
             base += f'\n      Suggested ({kind}): "{body}"'
         return base
-    text = (f"BD plan — {TODAY:%A, %B %-d}\nRecord BD: {APP_URL}\n\n"
+    text = (f"{text_intro}\nRecord BD: {APP_URL}\n\n"
             f"OPPORTUNITY-DRIVEN (news & developments):\n"
             + ("\n".join(line(c) for c in opp_picks) or "  (none)")
             + "\n\nKEEPING CADENCE (stay in touch):\n"
             + ("\n".join(line(c) for c in cad_picks) or "  (none)"))
 
-    subject = f"BD plan — {TODAY:%b %-d}: {len(opp_picks)} opportunity, {len(cad_picks)} cadence"
     return subject, text, html
 
 
@@ -273,14 +330,75 @@ def send(subject, text, html):
     print(f"Sent BD plan to {to}.")
 
 
-def main():
-    subject, text, html = build()
+def _date(s):
+    if not s:
+        return None
+    try:
+        return dt.date.fromisoformat(str(s)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def vacation_active(cfg, today):
+    """True if today (PT) is within [vacation_start, vacation_end] inclusive and both
+    are set. Reads defensively so a pre-migration config (columns absent) is simply
+    'not on vacation'."""
+    start = _date(cfg.get("vacation_start"))
+    end = _date(cfg.get("vacation_end"))
+    return bool(start and end and start <= today <= end)
+
+
+def should_send_vacation_email(cfg, today):
+    """Send a vacation email only when active AND (today == vacation_start OR today is
+    Monday) AND we haven't already sent one today. Prevents double-sends and the Monday
+    case collapsing into the start case."""
+    if not vacation_active(cfg, today):
+        return False
+    start = _date(cfg.get("vacation_start"))
+    is_trigger = (today == start) or (today.weekday() == 0)  # 0 == Monday
+    already = _date(cfg.get("vacation_last_email_date")) == today
+    return is_trigger and not already
+
+
+def emit(subject, text, html):
     if DRY:
         print("SUBJECT:", subject)
         print(text)
         print(f"\n[dry-run — not sent; HTML {len(html)} chars]")
     else:
         send(subject, text, html)
+
+
+def main():
+    cfg = db.get_config()
+
+    # Branch order: (1) vacation, (2) Sunday (skip), (3) Saturday weekend, (4) daily.
+    if vacation_active(cfg, TODAY):
+        if not should_send_vacation_email(cfg, TODAY):
+            print(f"On vacation ({cfg.get('vacation_start')}–{cfg.get('vacation_end')}) "
+                  f"but {TODAY} is not a send day (start or Monday, not already sent). No email.")
+            return
+        subject, text, html = build(goal=VACATION_MAX, mode="vacation")
+        emit(subject, text, html)
+        if not DRY:
+            try:
+                db.update_config({"vacation_last_email_date": TODAY.isoformat()})
+            except Exception as e:
+                sys.stderr.write(f"WARNING: could not set vacation_last_email_date: {str(e)[:120]}\n")
+        return
+
+    wd = TODAY.weekday()  # Mon=0 .. Sun=6
+    if wd == 6:  # Sunday
+        print(f"{TODAY} is Sunday — no email (covered by Saturday's weekend plan).")
+        return
+    if wd == 5:  # Saturday
+        subject, text, html = build(goal=WEEKEND_MAX, mode="weekend")
+        emit(subject, text, html)
+        return
+
+    # Mon-Fri: normal daily email.
+    subject, text, html = build(mode="daily")
+    emit(subject, text, html)
 
 
 if __name__ == "__main__":

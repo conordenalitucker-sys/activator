@@ -15,6 +15,9 @@ create table if not exists config (
   daily_goal_minutes   int,
   roster_scrape_cadence text default 'weekly',
   scoring_weights      jsonb default '{"firm_fit":0.10,"triggers":0.40,"relationship":0.35,"business":0.15}'::jsonb,
+  vacation_start       date,   -- vacation mode (migration 011): inclusive [start, end] in PT
+  vacation_end         date,
+  vacation_last_email_date date,  -- dedupe: last day a vacation email was sent
   updated_at           timestamptz default now(),
   constraint config_singleton check (id = 1)
 );
