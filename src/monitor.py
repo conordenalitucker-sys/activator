@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -110,10 +111,38 @@ def courtlistener(phrase, token, jurisdiction=None):
     return out
 
 
+# Leading job-title / role prefixes that pollute imported company names
+# (e.g. "Associate GC PennyMac", "Former GC Tennis Channel", "CEO EOI Space Systems").
+_ROLE_PREFIX = re.compile(
+    r"^(former|current|associate|assistant|deputy|senior|managing|acting|interim|chief|"
+    r"general\s+counsel|gc|ceo|cfo|coo|clo|cto|cmo|evp|svp|vp|president|founder|"
+    r"head\s+of)\b[\s,]*", re.I)
+# Pure-status labels that name no searchable entity at all.
+_NON_ENTITY = {"various", "boards", "looking for work", "work", "n/a", "none", "unknown"}
+
+
+def clean_name_terms(name):
+    """Derive clean search entities from a possibly messy company label.
+
+    Splits combined "A / B" names, drops parenthetical role notes like
+    "(Managing Counsel)", and strips a leading job-title prefix. Returns [] for
+    pure-status labels (e.g. "Looking for work") so the caller can skip them.
+    """
+    terms = []
+    for part in re.split(r"\s*/\s*", name or ""):
+        part = re.sub(r"\([^)]*\)", " ", part)          # drop "(Deputy GC)" etc.
+        part = _ROLE_PREFIX.sub("", part).strip(" ,-")  # drop a leading title
+        part = re.sub(r"\s+", " ", part).strip(" ,-")
+        if len(part) >= 3 and part.lower() not in _NON_ENTITY:
+            terms.append(part)
+    return terms
+
+
 def build_queries(company, entities, contacts):
     qs = []  # (query, entity_id, relationship, proximity)
     primary = company.get("segment_focus") or company["name"]  # narrow big parents
-    qs.append((primary, None, "primary", 1.0))
+    for term in (clean_name_terms(primary) or [primary]):
+        qs.append((term, None, "primary", 1.0))
     for e in entities:
         if e.get("enabled", True):
             qs.append((e["name"], e["id"], e.get("type") or "entity", e.get("proximity_weight") or 0.8))
@@ -154,17 +183,27 @@ def classify(client, company, entities, candidates):
     for i, c in enumerate(candidates):
         lines.append(f'{i}. [{c["kind"]}] "{c["title"]}" ({c.get("date") or "n/d"}; '
                      f'src={c.get("source")}; matched query="{c["query"]}")')
+    watch = company.get("watch_terms") or []
+    watch_note = ""
+    if watch:
+        watch_note = (
+            f"USER WATCH TERMS (the attorney explicitly chose to track these): "
+            f"{', '.join(watch)}. Give any item matching a watch term the BENEFIT OF THE "
+            f"DOUBT — KEEP it even if it is only indirectly about the target company "
+            f"(e.g. concerns a person, counterparty, or matter the attorney is following "
+            f"through that term).\n")
     prompt = (
         f"You filter news/court hits for a law firm's business development. The firm is "
         f"Steptoe LLP; the attorney does litigation/appeals.\n\n"
         f"Target company: {company['name']}\n"
         f"Known related entities (corporate family/peers/industry): {ent_list}\n"
-        f"{focus}\n"
+        f"{focus}{watch_note}\n"
         f"Below are candidate items found by keyword search. Many will be NOISE "
         f"(wrong entity, generic word match, wrong segment, wrong jurisdiction, unrelated). "
         f"Keep ONLY items genuinely about the focus segment/entities above that a BD-minded "
         f"attorney would find relevant (litigation, regulatory action, M&A/funding, "
-        f"leadership change, major business news, industry development).\n\n"
+        f"leadership change, major business news, industry development) — plus anything "
+        f"matching a user watch term per the rule above.\n\n"
         f"CANDIDATES:\n" + "\n".join(lines) + "\n\n"
         f"Return ONLY a JSON array. For each KEPT item: "
         f'{{"index": int, "type": one of '
