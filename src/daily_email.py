@@ -200,7 +200,9 @@ def build(goal=None, mode="daily"):
         return len(sig_by_co.get(c.get("company_id"), [])) > 0
 
     # Shared selection — identical to the dashboard "Today" list.
-    opp_picks, cad_picks = planning.select_daily_plan(contacts, sig_by_co, goal, TODAY)
+    opp_picks, cad_picks = planning.select_daily_plan(
+        contacts, sig_by_co, goal, TODAY,
+        biz_by_contact=planning.index_referrals(db.get_business()))
 
     # Suggested outreach message per picked contact (one Claude call each, cached here).
     suggestions = {}

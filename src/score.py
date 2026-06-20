@@ -133,8 +133,8 @@ def main():
     catalog = [p["name"] for p in db.get("practice_areas?select=name&status=eq.active&order=name.asc")]
     signals = db.get("signals?select=company_id,type,score_impact,proximity_weight,"
                      "event_date,title,summary&dismissed=eq.false")
-    biz = db.get("business_origination?select=contact_id")
-    biz_contacts = {b["contact_id"] for b in biz if b.get("contact_id")}
+    # select=* so this works before and after migration 012 (actual_value column).
+    biz_by_contact = planning.index_referrals(db.get_business())
 
     sig_by_co = {}
     for s in signals:
@@ -160,7 +160,7 @@ def main():
             co["firm_fit"], co["firm_fit_note"] = ff, ff_note
         sigs = sig_by_co.get(c.get("company_id"), [])
         opp, rationale, comps, _top = planning.compute_opportunity(
-            c, co, sigs, biz_contacts, w, TODAY)
+            c, co, sigs, biz_by_contact, w, TODAY)
         if not DRY:
             db.update_contact(c["id"], {
                 "opportunity_score": opp,

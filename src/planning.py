@@ -97,9 +97,58 @@ def resolve_weights(weights):
             **{k: weights[k] for k in DEFAULT_WEIGHTS if weights and k in weights}}
 
 
-def compute_opportunity(c, company, signals, biz_ids, weights, today):
+# --- referrals / business-in ----------------------------------------------
+# How long after the last touch a referral source is considered to be going cold
+# and worth a proactive "keep warm" nudge.
+REFERRAL_KEEP_WARM_DAYS = 60
+
+
+def index_referrals(rows):
+    """Group business_origination rows into {contact_id: [rows]}."""
+    out = {}
+    for b in (rows or []):
+        cid = b.get("contact_id")
+        if cid:
+            out.setdefault(cid, []).append(b)
+    return out
+
+
+def referral_strength(rows, today):
+    """0..1 strength of a contact as a referral source, from their origination
+    history: more, larger (actual billings preferred over estimate), and more
+    recent referrals score higher. Decays over ~2 years with a floor so an old
+    referral still counts for something."""
+    if not rows:
+        return 0.0
+    total = 0.0
+    for b in rows:
+        d = parse_date(b.get("date")) or today
+        age = max((today - d).days, 0)
+        recency = max(0.2, 1.0 - age / 730.0)
+        val = float(b.get("actual_value") or b.get("est_value") or 0)
+        val_w = min(val / 100000.0, 1.0)            # $100k+ realized = full value weight
+        total += recency * (0.6 + 0.4 * val_w)
+    return min(total, 1.0)
+
+
+def referral_due(c, biz_by_contact, today, keep_warm_days=REFERRAL_KEEP_WARM_DAYS):
+    """True if this contact has sent business and has gone cold (never contacted,
+    or not contacted within keep_warm_days) — i.e. a referral source the engine
+    should proactively recommend reaching out to. Resets once you log a touch."""
+    rows = (biz_by_contact or {}).get(c.get("id"))
+    if not rows:
+        return False
+    ds = days_since(c, today)
+    return ds is None or ds >= keep_warm_days
+
+
+def compute_opportunity(c, company, signals, biz_by_contact, weights, today):
     """Return (score 0-100, rationale, components, top_signal). Uses the company's
-    CACHED firm_fit (firm_fit refresh is score.py's job)."""
+    CACHED firm_fit (firm_fit refresh is score.py's job).
+
+    biz_by_contact is {contact_id: [business_origination rows]} (preferred) so the
+    business component scales with referral count/value/recency. A bare set/list of
+    contact ids is still accepted for backward compatibility (binary credit)."""
     w = resolve_weights(weights)
     p = (c.get("manual_priority") or 3) / 5.0
     iv = cadence_interval(c)
@@ -127,7 +176,13 @@ def compute_opportunity(c, company, signals, biz_ids, weights, today):
 
     ff = float(company["firm_fit"]) if company and company.get("firm_fit") is not None else 0.5
     ff_note = (company or {}).get("firm_fit_note") or ""
-    business = 1.0 if c.get("id") in biz_ids else 0.0
+    if isinstance(biz_by_contact, dict):
+        ref_rows = biz_by_contact.get(c.get("id")) or []
+        business = referral_strength(ref_rows, today)
+        ref_n = len(ref_rows)
+    else:  # legacy: a set/list of contact ids -> binary credit
+        business = 1.0 if c.get("id") in (biz_by_contact or set()) else 0.0
+        ref_n = 1 if business else 0
 
     score01 = (w["firm_fit"] * ff + w["triggers"] * triggers
                + w["relationship"] * relationship + w["business"] * business)
@@ -149,8 +204,9 @@ def compute_opportunity(c, company, signals, biz_ids, weights, today):
         parts.append(f"{ds}d since contact" if ds is not None else "never contacted")
     if ff > 0.6 and ff_note:
         parts.append(f"firm fit: {ff_note}")
-    if business:
-        parts.append("has sent business")
+    if business > 0:
+        parts.append("referral source" + (f" ({ref_n} referrals)" if ref_n > 1
+                                           else " (sent business)"))
     rationale = (f"Opportunity {opp} vs your priority {c.get('manual_priority') or '—'}. "
                  + ("Drivers: " + "; ".join(parts) + ". " if parts else "")
                  + "Verify conflicts before pitching.")
@@ -159,18 +215,19 @@ def compute_opportunity(c, company, signals, biz_ids, weights, today):
     return opp, rationale, comps, (top[1] if top else None)
 
 
-def select_daily_plan(contacts, sig_by_company, goal, today, min_cadence=MIN_CADENCE):
+def select_daily_plan(contacts, sig_by_company, goal, today, min_cadence=MIN_CADENCE,
+                      biz_by_contact=None):
     """Unified pick logic for BOTH the dashboard Today list and the daily email.
     Returns (opp_picks, cad_picks):
       opp_picks = contacts with an ACTIONABLE signal (highly relevant AND newer than
-                  their last contact), ranked by opportunity score. This same bar
-                  overrides a pause.
+                  their last contact) OR a referral source going cold, ranked by
+                  opportunity score. The actionable-signal bar also overrides a pause.
       cad_picks = overdue contacts (PREFER no-signal pure-cadence), >= min_cadence,
                   so news can't crowd out relationship-keeping.
 
-    A contact who is neither overdue on cadence nor has fresh high-impact news is NOT
-    surfaced — so people you've just reached out to don't reappear day after day on
-    stale signals.
+    A contact who is neither overdue on cadence, nor has fresh high-impact news, nor
+    is a cooling referral source is NOT surfaced — so people you've just reached out
+    to don't reappear day after day.
     """
     def has_sig(c):
         return len(sig_by_company.get(c.get("company_id"), [])) > 0
@@ -181,11 +238,15 @@ def select_daily_plan(contacts, sig_by_company, goal, today, min_cadence=MIN_CAD
     def actionable(c):
         return actionable_signal(c, sig_by_company, today) is not None
 
-    # Opportunity branch: surface a contact off-cadence ONLY for a fresh, highly
-    # relevant development (impact >= BIG_SIGNAL_IMPACT and dated after the last
-    # contact). The same bar is what interrupts a pause, so monitoring still keeps
-    # working for paused contacts when something big and new actually happens.
-    opp_pool = sorted([c for c in contacts if actionable(c)],
+    def referral(c):
+        # Keep referral sources warm, but respect an explicit pause.
+        return not paused(c) and referral_due(c, biz_by_contact, today)
+
+    # Opportunity branch: surface a contact off-cadence for a fresh, highly relevant
+    # development (impact >= BIG_SIGNAL_IMPACT and dated after the last contact) — the
+    # same bar that interrupts a pause — OR because they've sent business and are going
+    # cold (a referral source worth proactively nurturing). Ranked by opportunity score.
+    opp_pool = sorted([c for c in contacts if actionable(c) or referral(c)],
                       key=lambda c: (-opp_score(c), -(c.get("manual_priority") or 0)))
     max_opp = max(goal - min_cadence, 0)
     opp_picks = opp_pool[:max_opp]

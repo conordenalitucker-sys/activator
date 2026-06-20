@@ -334,12 +334,12 @@ def rescore():
     sigs = {}
     for s in load_signals():
         sigs.setdefault(s.get("company_id"), []).append(s)
-    biz_ids = {b["contact_id"] for b in db.get_business() if b.get("contact_id")}
+    biz_by_contact = planning.index_referrals(db.get_business())
     weights = load_config().get("scoring_weights")
     for c in db.get_contacts():
         score, rationale, _comps, _top = planning.compute_opportunity(
             c, cos.get(c.get("company_id")), sigs.get(c.get("company_id"), []),
-            biz_ids, weights, TODAY)
+            biz_by_contact, weights, TODAY)
         db.update_contact(c["id"], {
             "opportunity_score": score, "opportunity_rationale": rationale,
             "score_updated_at": dt.datetime.utcnow().isoformat()})
@@ -456,7 +456,9 @@ if page == "Today":
         vend = _cfg_date(cfg, "vacation_end")
         st.info(f"🏖 On vacation until {vend.isoformat() if vend else '—'}. "
                 "Daily emails are paused; here's a light plan for the week.")
-        vopp, vcad = planning.select_daily_plan(contacts, sig_by_company, 6, TODAY)
+        vopp, vcad = planning.select_daily_plan(
+            contacts, sig_by_company, 6, TODAY,
+            biz_by_contact=planning.index_referrals(load_business()))
         st.subheader("🔔 Opportunity-driven")
         if vopp:
             for c in vopp:
@@ -504,7 +506,9 @@ if page == "Today":
         st.rerun()
 
     # Shared daily plan — identical to the morning email.
-    opp_picks, cad_picks = planning.select_daily_plan(contacts, sig_by_company, goal, TODAY)
+    opp_picks, cad_picks = planning.select_daily_plan(
+        contacts, sig_by_company, goal, TODAY,
+        biz_by_contact=planning.index_referrals(load_business()))
     st.subheader("🔔 Opportunity-driven")
     if opp_picks:
         for c in opp_picks:
