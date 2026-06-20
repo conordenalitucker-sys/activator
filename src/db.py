@@ -139,6 +139,10 @@ def insert_business(fields: dict):
     return post("business_origination", fields)
 
 
+def update_business(business_id: str, fields: dict):
+    return patch(f"business_origination?id=eq.{business_id}", fields)
+
+
 # --- companies / entities / signals (monitoring) ---------------------------
 
 def get_companies_full() -> list:

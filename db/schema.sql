@@ -253,6 +253,7 @@ create table if not exists business_origination (
   date        date not null default current_date,
   description text,
   est_value   numeric,
+  actual_value numeric,
   created_at  timestamptz default now()
 );
 create index if not exists business_origination_contact_idx

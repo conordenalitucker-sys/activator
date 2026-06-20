@@ -805,27 +805,74 @@ elif page == "Business In":
             st.rerun()
 
     if biz:
-        total = sum((b.get("est_value") or 0) for b in biz)
-        c1, c2 = st.columns(2)
+        est_total = sum((b.get("est_value") or 0) for b in biz)
+        act_total = sum((b.get("actual_value") or 0) for b in biz)
+        c1, c2, c3 = st.columns(3)
         c1.metric("Originations recorded", len(biz))
-        c2.metric("Est. value tracked", f"${total:,.0f}")
-        st.dataframe(pd.DataFrame([{
+        c2.metric("Estimated value", f"${est_total:,.0f}")
+        c3.metric("Actual billings", f"${act_total:,.0f}")
+
+        st.subheader("Originations — fill in actual billings")
+        st.caption("Estimated value is captured when you record the referral. Edit the "
+                   "**Actual billings** column as real numbers come in, then Save. The "
+                   "other columns are read-only here.")
+        edit_df = pd.DataFrame([{
+            "id": b["id"],
             "Date": (b.get("date") or "")[:10],
             "Source": name_by_id.get(b.get("contact_id"), "—"),
             "Description": b.get("description") or "",
-            "Est. value": f"${(b.get('est_value') or 0):,.0f}" if b.get("est_value") else "",
-        } for b in biz]), width="stretch", hide_index=True)
+            "Estimated": float(b.get("est_value") or 0),
+            "Actual billings": (float(b["actual_value"])
+                                if b.get("actual_value") is not None else None),
+        } for b in biz])
+        edited = st.data_editor(
+            edit_df, width="stretch", hide_index=True, key="biz_editor",
+            column_config={
+                "id": None,
+                "Estimated": st.column_config.NumberColumn("Estimated", format="$%d",
+                                                           disabled=True),
+                "Actual billings": st.column_config.NumberColumn(
+                    "Actual billings", format="$%d", min_value=0, step=1000,
+                    help="Enter realized billings as they come in."),
+            },
+            disabled=["Date", "Source", "Description"],
+        )
+        if st.button("💾 Save actual billings"):
+            orig = {b["id"]: b.get("actual_value") for b in biz}
+            try:
+                changed = 0
+                for _, row in edited.iterrows():
+                    new_val = row["Actual billings"]
+                    new_val = (None if new_val is None or pd.isna(new_val)
+                               else float(new_val))
+                    old_val = orig.get(row["id"])
+                    old_val = None if old_val is None else float(old_val)
+                    if new_val != old_val:
+                        db.update_business(row["id"], {"actual_value": new_val})
+                        changed += 1
+                refresh()
+                st.success(f"Saved {changed} update(s).")
+                st.rerun()
+            except Exception:
+                st.error("Couldn't save — run migration 012 in the Supabase SQL Editor "
+                         "(it adds the actual_value column), then try again.")
 
-        agg = defaultdict(lambda: [0, 0.0])
+        agg = defaultdict(lambda: [0, 0.0, 0.0])
         for b in biz:
             a = agg[b.get("contact_id")]
             a[0] += 1
             a[1] += (b.get("est_value") or 0)
-        st.subheader("By source connection")
+            a[2] += (b.get("actual_value") or 0)
+        ordered = sorted(agg.items(), key=lambda kv: -kv[1][1])
+        st.subheader("By source connection — estimated vs. actual")
+        chart_df = pd.DataFrame([{
+            "Source": name_by_id.get(k, "—"), "Estimated": v[1], "Actual": v[2],
+        } for k, v in ordered]).set_index("Source")
+        st.bar_chart(chart_df)
         st.dataframe(pd.DataFrame([{
-            "Source": name_by_id.get(k, "—"), "Count": v[0], "Est. value": f"${v[1]:,.0f}",
-        } for k, v in sorted(agg.items(), key=lambda kv: -kv[1][1])]),
-            width="stretch", hide_index=True)
+            "Source": name_by_id.get(k, "—"), "Count": v[0],
+            "Est. value": f"${v[1]:,.0f}", "Actual billings": f"${v[2]:,.0f}",
+        } for k, v in ordered]), width="stretch", hide_index=True)
     else:
         st.info("No business-in recorded yet.")
 
