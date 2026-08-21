@@ -119,6 +119,9 @@ Claude classifies & summarizes each hit into a **signal** with a type and a `sco
   opportunity-score/manual-priority gaps, dormant high-value contacts.
 - **Log it button** records the interaction (type + channel + date) and **resets the cadence
   clock**, updating `last_contacted_at`.
+- **Weekend digest + vacation mode now exist** — Saturday sends one Sat+Sun digest (Sunday
+  skipped) and a dashboard "I'm on vacation" control swaps daily emails for a weekly check-in.
+  See the canonical Desktop doc (section 5) for details.
 
 ---
 
