@@ -135,6 +135,8 @@ def main():
                      "event_date,title,summary&dismissed=eq.false")
     # select=* so this works before and after migration 012 (actual_value column).
     biz_by_contact = planning.index_referrals(db.get_business())
+    # Pitch work feeds the same business component; empty until migration 013 runs.
+    pitch_by_contact = planning.index_pitches(db.get_pitch_reps_safe())
 
     sig_by_co = {}
     for s in signals:
@@ -160,7 +162,7 @@ def main():
             co["firm_fit"], co["firm_fit_note"] = ff, ff_note
         sigs = sig_by_co.get(c.get("company_id"), [])
         opp, rationale, comps, _top = planning.compute_opportunity(
-            c, co, sigs, biz_by_contact, w, TODAY)
+            c, co, sigs, biz_by_contact, w, TODAY, pitch_by_contact=pitch_by_contact)
         if not DRY:
             db.update_contact(c["id"], {
                 "opportunity_score": opp,

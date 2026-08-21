@@ -24,7 +24,8 @@ try:
     _secrets = dict(st.secrets)
 except Exception:
     _secrets = {}
-for _k in ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_PUBLISHABLE_KEY"):
+for _k in ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "SUPABASE_PUBLISHABLE_KEY",
+           "GMAIL_SENDER", "GMAIL_APP_PASSWORD", "RECIPIENT_EMAIL"):
     if _k not in os.environ and _k in _secrets:
         os.environ[_k] = str(_secrets[_k])
 
@@ -32,12 +33,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 import importlib  # noqa: E402
 import db  # noqa: E402
 import planning  # noqa: E402  (shared scoring + daily-plan core)
+import pitch  # noqa: E402  (pitch-log row diffing + vocab)
 
 # Streamlit Cloud re-runs app.py on each deploy but can keep imported modules cached in
 # memory, so newly-shipped db/planning functions may be missing until a manual reboot.
 # Reloading from disk on startup makes the app self-heal that without a reboot.
 importlib.reload(db)
 importlib.reload(planning)
+importlib.reload(pitch)
 
 st.set_page_config(page_title="Project Activator", page_icon="📇", layout="wide")
 
@@ -51,6 +54,9 @@ TYPE_OPTS = ["client", "past-client", "prospect", "professional", "referral", "f
 COMM_OPTS = ["email", "call", "LinkedIn", "in-person", "unknown"]
 SENIORITY_OPTS = ["decision-maker", "influencer", "staff", "unknown"]
 TOUCH_TYPES = ["personal", "pitch", "legal-update", "industry-check", "hello", "client-work", "other"]
+PITCH_WORK_TYPES = pitch.WORK_TYPES
+PITCH_OUTCOMES = pitch.OUTCOMES
+PITCH_SOURCE_HINTS = pitch.SOURCE_HINTS
 CHANNELS = ["email", "LinkedIn", "call", "in-person", "event", "text", "other"]
 CHANNEL_LABEL = {"text": "text / DM"}
 
@@ -148,6 +154,16 @@ def load_interactions():
 @st.cache_data(ttl=60)
 def load_business():
     return db.get_business()
+
+
+@st.cache_data(ttl=60)
+def load_pitch_reps():
+    return db.get_pitch_reps()
+
+
+@st.cache_data(ttl=600)
+def load_attorney_names():
+    return db.get_attorney_names()
 
 
 @st.cache_data(ttl=120)
@@ -305,10 +321,11 @@ def vacation_controls(cfg, key_prefix):
 
 
 def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None,
-           trajectory=None, trajectory_ok=None):
+           trajectory=None, trajectory_ok=None, when_iso=None):
+    when_iso = when_iso or TODAY_ISO
     db.log_interaction({
         "contact_id": contact_id,
-        "date": TODAY_ISO,
+        "date": when_iso,
         "type": ttype,
         "channel": channel,
         "duration_minutes": minutes or None,
@@ -319,11 +336,17 @@ def do_log(contact_id, ttype, channel, minutes, notes, suggested_type=None,
         "suggested_type": suggested_type,
         "logged_via": "button",
     })
-    upd = {"last_contacted_at": TODAY_ISO}
+    # A back-dated log (e.g. a pitch rep recorded late) must never move the cadence
+    # clock BACKWARDS past a more recent touch.
+    prev = next((c.get("last_contacted_at") for c in contacts if c["id"] == contact_id), None)
+    upd = {}
+    if not prev or when_iso >= str(prev)[:10]:
+        upd["last_contacted_at"] = when_iso
     if trajectory:  # update the contact's CURRENT relationship state
         upd["trajectory"] = trajectory
         upd["trajectory_ok"] = trajectory_ok
-    db.update_contact(contact_id, upd)
+    if upd:
+        db.update_contact(contact_id, upd)
     refresh()
 
 
@@ -335,11 +358,12 @@ def rescore():
     for s in load_signals():
         sigs.setdefault(s.get("company_id"), []).append(s)
     biz_by_contact = planning.index_referrals(db.get_business())
+    pitch_by_contact = planning.index_pitches(db.get_pitch_reps_safe())
     weights = load_config().get("scoring_weights")
     for c in db.get_contacts():
         score, rationale, _comps, _top = planning.compute_opportunity(
             c, cos.get(c.get("company_id")), sigs.get(c.get("company_id"), []),
-            biz_by_contact, weights, TODAY)
+            biz_by_contact, weights, TODAY, pitch_by_contact=pitch_by_contact)
         db.update_contact(c["id"], {
             "opportunity_score": score, "opportunity_rationale": rationale,
             "score_updated_at": dt.datetime.utcnow().isoformat()})
@@ -349,7 +373,8 @@ def rescore():
 # ---------------------------------------------------------------------------
 st.sidebar.title("📇 Project Activator")
 page = st.sidebar.radio("Go to", ["Today", "Suggestions", "Signals", "Contacts", "Companies",
-                                  "Add contact", "Business In", "Activity", "Settings"])
+                                  "Add contact", "Business In", "Pitch Reps",
+                                  "Activity", "Settings"])
 st.sidebar.caption("Public info + relationship notes only — no confidential matter details.")
 
 contacts = load_contacts()
@@ -818,8 +843,9 @@ elif page == "Business In":
 
         st.subheader("Originations — fill in actual billings")
         st.caption("Estimated value is captured when you record the referral. Edit the "
-                   "**Actual billings** column as real numbers come in, then Save. The "
-                   "other columns are read-only here.")
+                   "**Actual billings** column as real numbers come in, then Save. To remove "
+                   "a mistaken or duplicate line, tick **Delete** and use the button below "
+                   "the table.")
         edit_df = pd.DataFrame([{
             "id": b["id"],
             "Date": (b.get("date") or "")[:10],
@@ -828,6 +854,7 @@ elif page == "Business In":
             "Estimated": float(b.get("est_value") or 0),
             "Actual billings": (float(b["actual_value"])
                                 if b.get("actual_value") is not None else None),
+            "Delete": False,
         } for b in biz])
         edited = st.data_editor(
             edit_df, width="stretch", hide_index=True, key="biz_editor",
@@ -838,6 +865,8 @@ elif page == "Business In":
                 "Actual billings": st.column_config.NumberColumn(
                     "Actual billings", format="$%d", min_value=0, step=1000,
                     help="Enter realized billings as they come in."),
+                "Delete": st.column_config.CheckboxColumn(
+                    "Delete", help="Tick to remove this line, then confirm below."),
             },
             disabled=["Date", "Source", "Description"],
         )
@@ -861,6 +890,19 @@ elif page == "Business In":
                 st.error("Couldn't save — run migration 012 in the Supabase SQL Editor "
                          "(it adds the actual_value column), then try again.")
 
+        marked = [r for _, r in edited.iterrows() if bool(r.get("Delete"))]
+        if marked:
+            st.warning("Marked for deletion: "
+                       + "; ".join(f"{r['Date']} · {r['Source']} · {r['Description'] or '—'}"
+                                   for r in marked))
+            st.caption("Deleting also removes the line from referral scoring.")
+            if st.button(f"🗑 Delete {len(marked)} line(s)", type="primary", key="biz_delete"):
+                for r in marked:
+                    db.delete_business(r["id"])
+                refresh()
+                st.success(f"Deleted {len(marked)} line(s).")
+                st.rerun()
+
         agg = defaultdict(lambda: [0, 0.0, 0.0])
         for b in biz:
             a = agg[b.get("contact_id")]
@@ -879,6 +921,220 @@ elif page == "Business In":
         } for k, v in ordered]), width="stretch", hide_index=True)
     else:
         st.info("No business-in recorded yet.")
+
+
+# ============================== PITCH REPS =================================
+elif page == "Pitch Reps":
+    st.header("Pitch Reps")
+    st.caption("Every pitch you put in — who you pitched with, the potential client, how it "
+               "came in, and whether it landed. Keep descriptions general — no confidential "
+               "matter details.")
+    try:
+        reps = load_pitch_reps()
+    except Exception:
+        st.warning("Run db/migrations/013_pitch_reps.sql in the Supabase SQL Editor to enable "
+                   "this page (it adds the pitch_reps table).")
+        st.stop()
+
+    def client_label(c):
+        org = org_name(c)
+        return f"{c['name']} — {org}" if org else c["name"]
+
+    label_by_id = {c["id"]: client_label(c) for c in contacts}
+    id_by_label = {v: k for k, v in label_by_id.items()}
+    client_labels = sorted(id_by_label.keys())
+    partner_opts = sorted(set(load_attorney_names())
+                          | {(r.get("partner") or "").strip() for r in reps if r.get("partner")})
+    source_opts = sorted(set(PITCH_SOURCE_HINTS)
+                         | {(r.get("source") or "").strip() for r in reps if r.get("source")})
+
+    with st.form("add_pitch_rep"):
+        a, b, c = st.columns([1, 2, 2])
+        when = a.date_input("Date", TODAY)
+        partner_pick = b.selectbox("Partner worked with", ["—"] + partner_opts)
+        partner_new = c.text_input("…or another name", help="Overrides the dropdown if filled.")
+
+        d, e = st.columns(2)
+        client_pick = d.selectbox("Potential client (existing connection)", ["—"] + client_labels)
+        client_new = e.text_input("…or a new potential client",
+                                  help="Creates a new connection you can then track.")
+        f, g = st.columns(2)
+        client_new_org = f.text_input("New client's organization (optional)")
+        source_pick = g.selectbox("Source it came in through", ["—"] + source_opts)
+
+        h, i, j = st.columns([2, 1, 1])
+        source_new = h.text_input("…or a new source")
+        value = i.number_input("Potential value ($)", 0, step=25000)
+        work_type = j.selectbox("Type", PITCH_WORK_TYPES)
+
+        desc = st.text_area("General matter description")
+
+        k, m = st.columns([1, 1])
+        channel = k.selectbox("Channel", CHANNELS, index=CHANNELS.index("in-person"),
+                              format_func=channel_label,
+                              help="The rep is also logged as a pitch touch with this contact.")
+        minutes = m.number_input("Time spent (minutes)", 0, step=15)
+        outcome = st.radio("Outcome so far", PITCH_OUTCOMES, horizontal=True)
+        st.caption("Recording a rep also logs a **pitch** interaction with the contact, so it "
+                   "counts toward your daily goal and resets their cadence clock.")
+
+        if st.form_submit_button("➕ Record pitch rep"):
+            partner = partner_new.strip() or ("" if partner_pick == "—" else partner_pick)
+            source = source_new.strip() or ("" if source_pick == "—" else source_pick)
+            contact_id = None
+            if client_new.strip():
+                company_id = (db.ensure_company(client_new_org)
+                              if client_new_org.strip() else None)
+                created = db.insert_contact({
+                    "name": client_new.strip(), "company_id": company_id,
+                    "contact_type": "prospect", "priority_color": "Blue",
+                    "cadence_tier": "quarterly", "manual_priority": 3,
+                })
+                contact_id = created[0]["id"] if created else None
+            elif client_pick != "—":
+                contact_id = id_by_label.get(client_pick)
+            if not contact_id:
+                st.error("Pick an existing connection or type a new potential client.")
+            else:
+                db.insert_pitch_rep({
+                    "date": when.isoformat(),
+                    "partner": partner or None,
+                    "contact_id": contact_id,
+                    "source": source or None,
+                    "potential_value": value or None,
+                    "description": desc or None,
+                    "work_type": work_type,
+                    "outcome": outcome,
+                    "outcome_date": TODAY_ISO if outcome != "pending" else None,
+                })
+                # A pitch rep IS a touch: log it so it counts toward the daily goal and
+                # resets the cadence clock for that contact.
+                log_note = "Pitch rep" + (f" with {partner}" if partner else "")
+                if source:
+                    log_note += f" · via {source}"
+                if desc:
+                    log_note += f" — {desc}"
+                do_log(contact_id, "pitch", channel, minutes, log_note,
+                       when_iso=when.isoformat())
+                st.success("Pitch rep recorded and logged as a pitch touch."
+                           + (f" Added {client_new.strip()} as a new connection."
+                              if client_new.strip() else ""))
+                st.rerun()
+
+    if not reps:
+        st.info("No pitch reps recorded yet.")
+    else:
+        mail_to = os.environ.get("RECIPIENT_EMAIL") or "your inbox"
+        ec = st.columns([1, 3])
+        if ec[0].button("📧 Email me this spreadsheet", key="pitch_email"):
+            try:
+                sent_to = pitch.send_log_email(
+                    reps, {c["id"]: c for c in contacts}, companies,
+                    today_iso=TODAY_ISO)
+                st.success(f"Sent the pitch log to {sent_to} (CSV attached).")
+            except Exception as e:
+                st.error(f"Couldn't send the email: {e}")
+        ec[1].caption(f"Sends the table below to {mail_to} — formatted in the message "
+                      "and attached as a CSV you can open in Excel.")
+
+        def pval(r):
+            return float(r.get("potential_value") or 0)
+
+        landed = [r for r in reps if r.get("outcome") == "landed"]
+        lost = [r for r in reps if r.get("outcome") == "lost"]
+        open_reps = [r for r in reps if (r.get("outcome") or "pending") == "pending"]
+        decided = len(landed) + len(lost)
+        m = st.columns(4)
+        m[0].metric("Pitch reps", len(reps))
+        m[1].metric("Landed", len(landed),
+                    f"{len(landed) / decided * 100:.0f}% win rate" if decided
+                    else "no results yet", delta_color="off")
+        m[2].metric("Open pipeline", f"${sum(pval(r) for r in open_reps):,.0f}",
+                    f"{len(open_reps)} pending", delta_color="off")
+        m[3].metric("Landed value", f"${sum(pval(r) for r in landed):,.0f}")
+
+        st.subheader("Pitch log")
+        st.caption("Every column is editable — set **Outcome** to landed or lost as pitches "
+                   "resolve, then Save. Tick **Delete** to remove a line.")
+        rep_df = pd.DataFrame([{
+            "id": r["id"],
+            "Date": parse_date(r.get("date")),
+            "Partner": r.get("partner") or "",
+            "Potential client": label_by_id.get(r.get("contact_id"), ""),
+            "Source": r.get("source") or "",
+            "Potential value": (float(r["potential_value"])
+                                if r.get("potential_value") is not None else None),
+            "Description": r.get("description") or "",
+            "Type": r.get("work_type") or "",
+            "Outcome": r.get("outcome") or "pending",
+            "Delete": False,
+        } for r in reps])
+        rep_df["Date"] = pd.to_datetime(rep_df["Date"])
+        edited = st.data_editor(
+            rep_df, width="stretch", hide_index=True, key="pitch_editor",
+            column_config={
+                "id": None,
+                "Date": st.column_config.DateColumn("Date", format="YYYY-MM-DD"),
+                "Potential client": st.column_config.SelectboxColumn(
+                    "Potential client", options=client_labels,
+                    help="Reassign to another connection if needed."),
+                "Potential value": st.column_config.NumberColumn(
+                    "Potential value", format="$%d", min_value=0, step=25000),
+                "Description": st.column_config.TextColumn("Description", width="large"),
+                "Type": st.column_config.SelectboxColumn("Type", options=PITCH_WORK_TYPES),
+                "Outcome": st.column_config.SelectboxColumn("Outcome", options=PITCH_OUTCOMES),
+                "Delete": st.column_config.CheckboxColumn(
+                    "Delete", help="Tick to remove this line, then confirm below."),
+            },
+        )
+
+        if st.button("💾 Save changes", key="pitch_save"):
+            orig = {r["id"]: r for r in reps}
+            changed = 0
+            for _, row in edited.iterrows():
+                if bool(row.get("Delete")):
+                    continue  # handled by the delete button below
+                fields = pitch.diff_row(row, orig.get(row["id"], {}), id_by_label, TODAY_ISO)
+                if fields:
+                    fields["updated_at"] = dt.datetime.utcnow().isoformat()
+                    db.update_pitch_rep(row["id"], fields)
+                    changed += 1
+            refresh()
+            st.success(f"Saved {changed} update(s).")
+            st.rerun()
+
+        marked = [r for _, r in edited.iterrows() if bool(r.get("Delete"))]
+        if marked:
+            st.warning("Marked for deletion: "
+                       + "; ".join(f"{pitch.as_iso(r['Date']) or '—'} · "
+                                   f"{r['Potential client'] or '—'} · {r['Partner'] or '—'}"
+                                   for r in marked))
+            if st.button(f"🗑 Delete {len(marked)} line(s)", type="primary", key="pitch_delete"):
+                for r in marked:
+                    db.delete_pitch_rep(r["id"])
+                refresh()
+                st.success(f"Deleted {len(marked)} line(s).")
+                st.rerun()
+
+        def breakdown(key, title):
+            agg = defaultdict(lambda: [0, 0, 0.0])
+            for r in reps:
+                a = agg[(r.get(key) or "—")]
+                a[0] += 1
+                a[1] += 1 if r.get("outcome") == "landed" else 0
+                a[2] += pval(r)
+            rows = sorted(agg.items(), key=lambda kv: -kv[1][0])
+            st.markdown(f"**{title}**")
+            st.dataframe(pd.DataFrame([{
+                title: k, "Pitches": v[0], "Landed": v[1],
+                "Potential value": f"${v[2]:,.0f}",
+            } for k, v in rows]), width="stretch", hide_index=True)
+
+        cols = st.columns(2)
+        with cols[0]:
+            breakdown("source", "Source")
+        with cols[1]:
+            breakdown("partner", "Partner")
 
 
 # ============================== ACTIVITY ==================================

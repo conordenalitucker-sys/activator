@@ -64,6 +64,12 @@ def post(path: str, body, prefer: str = "return=representation"):
     return r.json() if r.text else None
 
 
+def delete(path: str):
+    r = requests.delete(f"{_base()}/rest/v1/{path}", headers=_headers({"Prefer": "return=minimal"}),
+                        timeout=30)
+    r.raise_for_status()
+
+
 # --- convenience -----------------------------------------------------------
 
 def get_config() -> dict:
@@ -141,6 +147,46 @@ def insert_business(fields: dict):
 
 def update_business(business_id: str, fields: dict):
     return patch(f"business_origination?id=eq.{business_id}", fields)
+
+
+def delete_business(business_id: str):
+    """Remove an origination row outright (used to undo a mis-keyed / duplicate entry)."""
+    return delete(f"business_origination?id=eq.{business_id}")
+
+
+# --- pitch reps (migration 013) --------------------------------------------
+
+def get_pitch_reps() -> list:
+    return get("pitch_reps?select=*&order=date.desc,created_at.desc")
+
+
+def get_pitch_reps_safe() -> list:
+    """Pitch reps for scoring — empty (not an error) if migration 013 hasn't run yet,
+    so the nightly job and dashboard keep working either way."""
+    try:
+        return get_pitch_reps()
+    except Exception:
+        return []
+
+
+def insert_pitch_rep(fields: dict):
+    return post("pitch_reps", fields)
+
+
+def update_pitch_rep(rep_id: str, fields: dict):
+    return patch(f"pitch_reps?id=eq.{rep_id}", fields)
+
+
+def delete_pitch_rep(rep_id: str):
+    return delete(f"pitch_reps?id=eq.{rep_id}")
+
+
+def get_attorney_names() -> list:
+    """Active firm colleagues from the scraped roster — used to suggest pitch partners."""
+    try:
+        return [a["name"] for a in get("attorneys?select=name&status=eq.active&order=name.asc")]
+    except Exception:
+        return []
 
 
 # --- companies / entities / signals (monitoring) ---------------------------

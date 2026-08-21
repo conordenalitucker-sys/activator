@@ -23,6 +23,8 @@ from pathlib import Path
 import gspread
 from google.oauth2.service_account import Credentials
 
+import pitch  # shared pitch-log table shape (same src/ directory)
+
 ROOT = Path(__file__).resolve().parent.parent
 SA_FILE = ROOT / "secrets" / "google-service-account.json"
 SHEET_FILE = ROOT / "secrets" / "SHEET.txt"
@@ -242,6 +244,16 @@ def main():
         ])
     write_tab("Entities", ent_rows)
     print(f"Synced {len(entities)} entities to worksheet 'Entities'.")
+
+    # --- Pitch Reps tab: the pitch log (one-way mirror; edit it in the dashboard) ---
+    try:
+        reps = supa_get(cfg, "pitch_reps?select=*&order=date.desc,created_at.desc")
+    except Exception:
+        print("Skipped the 'Pitch Reps' tab — run migration 013 to create the table.")
+    else:
+        write_tab("Pitch Reps",
+                  pitch.export_rows(reps, {c["id"]: c for c in contacts}, co_name))
+        print(f"Synced {len(reps)} pitch reps to worksheet 'Pitch Reps'.")
 
 
 if __name__ == "__main__":

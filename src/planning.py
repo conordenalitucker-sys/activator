@@ -142,13 +142,64 @@ def referral_due(c, biz_by_contact, today, keep_warm_days=REFERRAL_KEEP_WARM_DAY
     return ds is None or ds >= keep_warm_days
 
 
-def compute_opportunity(c, company, signals, biz_by_contact, weights, today):
+# --- pitch reps -------------------------------------------------------------
+# How long a still-open pitch counts as a LIVE pursuit before it's treated as stale.
+PITCH_ACTIVE_DAYS = 180
+# A pursuit at or above this size carries full value weight in the pitch component.
+PITCH_FULL_VALUE = 250000.0
+
+
+def index_pitches(rows):
+    """Group pitch_reps rows into {contact_id: [rows]}."""
+    out = {}
+    for r in (rows or []):
+        cid = r.get("contact_id")
+        if cid:
+            out.setdefault(cid, []).append(r)
+    return out
+
+
+def pitch_strength(rows, today):
+    """0..1 strength of a contact as an ACTIVE pitch target, from your pitch reps.
+
+    An open pitch is the strongest form of live opportunity — you are already in
+    motion — and decays to nothing over ~6 months as it goes stale. A landed pitch
+    counts for less here (the resulting work usually shows up in business_origination
+    too, and this shouldn't double-count it); a lost pitch leaves a small residual for
+    a year, because you invested in the relationship and it can come back."""
+    if not rows:
+        return 0.0
+    total = 0.0
+    for r in rows:
+        d = parse_date(r.get("date")) or today
+        age = max((today - d).days, 0)
+        val_w = min(float(r.get("potential_value") or 0) / PITCH_FULL_VALUE, 1.0)
+        size = 0.6 + 0.4 * val_w
+        outcome = r.get("outcome") or "pending"
+        if outcome == "pending":
+            total += max(0.0, 1.0 - age / PITCH_ACTIVE_DAYS) * size
+        elif outcome == "landed":
+            total += 0.5 * max(0.2, 1.0 - age / 730.0) * size
+        else:  # lost
+            total += max(0.0, 1.0 - age / 365.0) * 0.15
+    return min(total, 1.0)
+
+
+def open_pitches(rows):
+    return [r for r in (rows or []) if (r.get("outcome") or "pending") == "pending"]
+
+
+def compute_opportunity(c, company, signals, biz_by_contact, weights, today,
+                        pitch_by_contact=None):
     """Return (score 0-100, rationale, components, top_signal). Uses the company's
     CACHED firm_fit (firm_fit refresh is score.py's job).
 
     biz_by_contact is {contact_id: [business_origination rows]} (preferred) so the
     business component scales with referral count/value/recency. A bare set/list of
-    contact ids is still accepted for backward compatibility (binary credit)."""
+    contact ids is still accepted for backward compatibility (binary credit).
+
+    pitch_by_contact is {contact_id: [pitch_reps rows]}; pitch work you've already put
+    in — especially a still-open pursuit — adds to the same business component."""
     w = resolve_weights(weights)
     p = (c.get("manual_priority") or 3) / 5.0
     iv = cadence_interval(c)
@@ -178,11 +229,18 @@ def compute_opportunity(c, company, signals, biz_by_contact, weights, today):
     ff_note = (company or {}).get("firm_fit_note") or ""
     if isinstance(biz_by_contact, dict):
         ref_rows = biz_by_contact.get(c.get("id")) or []
-        business = referral_strength(ref_rows, today)
+        referrals = referral_strength(ref_rows, today)
         ref_n = len(ref_rows)
     else:  # legacy: a set/list of contact ids -> binary credit
-        business = 1.0 if c.get("id") in (biz_by_contact or set()) else 0.0
-        ref_n = 1 if business else 0
+        referrals = 1.0 if c.get("id") in (biz_by_contact or set()) else 0.0
+        ref_n = 1 if referrals else 0
+
+    pitch_rows = (pitch_by_contact or {}).get(c.get("id")) or []
+    pitches = pitch_strength(pitch_rows, today)
+    open_n = len(open_pitches(pitch_rows))
+    # One "business" component covering both sides of the same thing: business they've
+    # sent you, and business you're actively chasing with them.
+    business = min(referrals + pitches, 1.0)
 
     score01 = (w["firm_fit"] * ff + w["triggers"] * triggers
                + w["relationship"] * relationship + w["business"] * business)
@@ -204,14 +262,17 @@ def compute_opportunity(c, company, signals, biz_by_contact, weights, today):
         parts.append(f"{ds}d since contact" if ds is not None else "never contacted")
     if ff > 0.6 and ff_note:
         parts.append(f"firm fit: {ff_note}")
-    if business > 0:
+    if referrals > 0:
         parts.append("referral source" + (f" ({ref_n} referrals)" if ref_n > 1
                                            else " (sent business)"))
+    if pitches > 0:
+        parts.append(f"open pitch ({open_n})" if open_n else "pitched before")
     rationale = (f"Opportunity {opp} vs your priority {c.get('manual_priority') or '—'}. "
                  + ("Drivers: " + "; ".join(parts) + ". " if parts else "")
                  + "Verify conflicts before pitching.")
     comps = {"firm_fit": round(ff, 2), "triggers": round(triggers, 2),
-             "relationship": round(relationship, 2), "business": business}
+             "relationship": round(relationship, 2), "business": round(business, 2),
+             "referrals": round(referrals, 2), "pitches": round(pitches, 2)}
     return opp, rationale, comps, (top[1] if top else None)
 
 
