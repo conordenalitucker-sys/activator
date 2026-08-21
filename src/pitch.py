@@ -188,15 +188,30 @@ def to_text(rows, stats) -> str:
     return "\n".join(lines)
 
 
+def config_status() -> str:
+    """What the running app can actually see of the mail settings — so a failed send
+    says whether the secrets are missing/misnamed or the send itself broke. Never
+    prints the app password, only whether it's there and how long it is."""
+    def state(key, secret=False):
+        v = os.environ.get(key)
+        if not v:
+            return f"{key}: MISSING"
+        return f"{key}: set, {len(v)} chars" if secret else f"{key}: {v}"
+    return " · ".join([state("GMAIL_SENDER"), state("GMAIL_APP_PASSWORD", secret=True),
+                       state("RECIPIENT_EMAIL")])
+
+
 def send_log_email(reps, contacts_by_id, companies_by_id=None, to=None, today_iso=""):
     """Email the current pitch log (HTML table + CSV attachment). Returns the address
     it went to. Needs GMAIL_SENDER / GMAIL_APP_PASSWORD in the environment."""
-    sender = os.environ.get("GMAIL_SENDER")
-    pw = os.environ.get("GMAIL_APP_PASSWORD")
+    sender = (os.environ.get("GMAIL_SENDER") or "").strip()
+    # Google shows app passwords in four spaced blocks but expects them unspaced; accept
+    # either, and tolerate a stray newline from a pasted secrets file.
+    pw = "".join((os.environ.get("GMAIL_APP_PASSWORD") or "").split())
     if not sender or not pw:
         raise RuntimeError("Email isn't configured — GMAIL_SENDER and GMAIL_APP_PASSWORD "
                            "must be set (add them to the app's secrets).")
-    to = to or os.environ.get("RECIPIENT_EMAIL") or sender
+    to = (to or os.environ.get("RECIPIENT_EMAIL") or sender).strip()
     rows = export_rows(reps, contacts_by_id, companies_by_id)
     stats = summary(reps)
 

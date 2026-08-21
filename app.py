@@ -1033,7 +1033,11 @@ elif page == "Pitch Reps":
                     today_iso=TODAY_ISO)
                 st.success(f"Sent the pitch log to {sent_to} (CSV attached).")
             except Exception as e:
-                st.error(f"Couldn't send the email: {e}")
+                st.error(f"Couldn't send the email: {type(e).__name__}: {e}")
+                st.caption("Mail settings this app can see — "
+                           + pitch.config_status()
+                           + ". MISSING means the key isn't in the app's secrets (check "
+                             "the spelling); if all three are set, the send itself failed.")
         ec[1].caption(f"Sends the table below to {mail_to} — formatted in the message "
                       "and attached as a CSV you can open in Excel.")
 
